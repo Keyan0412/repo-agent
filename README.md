@@ -90,6 +90,30 @@ Useful options:
 - `--max-tool-calls`: limit tool usage for a subtask.
 - `--max-files`: limit `read_file` calls for a subtask.
 
+## LLM Call Viewer
+
+The project also includes a small standalone FastAPI viewer for browsing LLM call logs in the browser.
+
+Start it with:
+
+```bash
+repo-agent-viewer --jsonl-path .cache/repo-agent/llm_calls.jsonl
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000
+```
+
+The UI shows:
+
+- a left-hand list of recorded calls by time
+- a click-through detail view for each call
+- formatted request, response, error, and raw JSON content
+
+This viewer is implemented separately from the main agent package so it can stay focused on debugging and inspection.
+
 ## Cache and Debug Output
 
 `repo-agent` writes repository-scoped state under:

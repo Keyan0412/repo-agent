@@ -104,30 +104,28 @@ class LLMClient:
 
         try:
             completion = self._backend.chat.completions.create(**payload)
-            if not isinstance(completion, ChatCompletion):
-                print("here should not use streaming mode")
-                exit(1)
-
             message = completion.choices[0].message
 
             # construct tool_call information
             tool_calls = []
             for tool_call in message.tool_calls or []:
-                if not isinstance(tool_call, ChatCompletionMessageFunctionToolCall):
+                function = getattr(tool_call, "function", None)
+                if function is None:
                     raise RuntimeError(f"Unexpected tool call type: {type(tool_call).__name__}")
 
                 tool_calls.append(
                     {
-                        "id": tool_call.id,
-                        "type": tool_call.type,
+                        "id": getattr(tool_call, "id", None),
+                        "type": getattr(tool_call, "type", None),
                         "function": {
-                            "name": tool_call.function.name,
-                            "arguments": tool_call.function.arguments,
+                            "name": getattr(function, "name", None),
+                            "arguments": getattr(function, "arguments", None),
                         },
                     }
                 )
 
-            response = LLMResponse(content=message.content or "", tool_calls=tool_calls, raw=completion.model_dump())
+            raw = completion.model_dump() if hasattr(completion, "model_dump") else json.loads(completion.json())
+            response = LLMResponse(content=message.content or "", tool_calls=tool_calls, raw=raw)
         except Exception as unknown_exc:
             if self.debug_recorder is not None:
                 self.debug_recorder.record_error(model=self.model, payload=payload, error=unknown_exc)
