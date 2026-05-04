@@ -333,5 +333,44 @@ def test_llm_client_run_tool_calling_loop_forces_final_answer_after_budget_exhau
     assert response.content == "{\"answer\":\"budget limited\"}"
     assert len(executed_tools) == 1
     assert executed_tools[0]["arguments"]["path"] == "a.py"
-    assert "tools" not in backend.calls[1]
+    assert backend.calls[1]["tools"]
+    assert backend.calls[1]["tool_choice"] == "none"
     assert "File read budget exhausted" in backend.calls[1]["messages"][-1]["content"]
+
+
+def test_llm_client_rejects_tool_calls_after_budget_exhaustion() -> None:
+    backend = _FakeBackend(
+        responses=[
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "echo", "arguments": "{\"text\": \"hello\"}"},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "echo", "arguments": "{\"text\": \"again\"}"},
+                    }
+                ]
+            },
+        ]
+    )
+    client = LLMClient(model="qwen-plus", api_key="sk-test", backend=backend)
+    registry = ToolRegistry([_EchoTool()])
+
+    with pytest.raises(RuntimeError, match="tool_choice='none'"):
+        client.run_tool_calling_loop(
+            system_prompt="test",
+            user_content="say hi",
+            tool_registry=registry,
+            max_tool_calls=1,
+        )
+
+    assert len(backend.calls) == 2
+    assert backend.calls[1]["tool_choice"] == "none"

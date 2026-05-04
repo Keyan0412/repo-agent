@@ -268,7 +268,8 @@ def test_investigate_subtask_forces_output_when_file_budget_is_exhausted(tmp_pat
     assert report.additional_tool_calls_needed == 2
     assert report.additional_file_reads_needed == 2
     assert report.files_checked == ["a.py"]
-    assert "tools" not in backend.calls[1]
+    assert backend.calls[1]["tools"]
+    assert backend.calls[1]["tool_choice"] == "none"
     assert "File read budget exhausted" in backend.calls[1]["messages"][-1]["content"]
 
 

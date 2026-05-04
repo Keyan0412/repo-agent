@@ -76,13 +76,13 @@ def build_parser() -> argparse.ArgumentParser:
     subtask.add_argument(
         "--max-tool-calls",
         type=int,
-        default=4,
+        default=15,
         help="Max tool calls for the subtask.",
     )
     subtask.add_argument(
         "--max-files",
         type=int,
-        default=3,
+        default=10,
         help="Max files to read for the subtask.",
     )
 

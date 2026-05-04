@@ -40,11 +40,11 @@ class InvestigatorAgent:
                 f"User Query:\n{user_query}\n\n"
                 f"Investigation Task:\n{task}\n\n"
                 "You may use read_repo_tree, find_text, trace_symbol, and read_file.\n"
-                "Generate an initial natural-language repo profile after enough evidence is collected."
+                "After enough evidence is collected, fill the Repo Profile framework from the system prompt exactly."
             ),
             tool_registry=self.tool_registry,
-            max_tool_calls=8,
-            max_files=5,
+            max_tool_calls=16,
+            max_files=10,
         )
         profile = response.content.strip()
         if not profile:

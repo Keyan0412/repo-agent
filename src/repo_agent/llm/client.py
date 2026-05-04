@@ -156,12 +156,15 @@ class LLMClient:
         budget_exhausted_reason: str | None = None
 
         while True:
+            tools_allowed = budget_exhausted_reason is None
             response = self.chat(
                 messages=messages,
-                tools=tools if budget_exhausted_reason is None else None,
-                tool_choice="auto" if budget_exhausted_reason is None else "none",
+                tools=tools,
+                tool_choice="auto" if tools_allowed else "none",
                 temperature=temperature,
             )
+            if not tools_allowed and response.tool_calls:
+                raise RuntimeError("LLM returned tool calls after tool_choice='none' was set")
             if not response.tool_calls:
                 return response, executed_tools
 
@@ -244,6 +247,32 @@ class LLMClient:
                     }
                 )
                 remaining_calls -= 1
+                if remaining_calls <= 0:
+                    budget_exhausted_reason = (
+                        f"Tool call budget exhausted. You have already used {max_tool_calls} tool calls. "
+                        "Do not request more tools. Produce your best final answer from the evidence already collected. "
+                        "Explicitly note any information gaps caused by the limited budget."
+                    )
+                    self._append_budget_exhausted_messages(
+                        messages=messages,
+                        tool_calls=response.tool_calls[index + 1 :],
+                        reason=budget_exhausted_reason,
+                    )
+                    messages.append({"role": "user", "content": budget_exhausted_reason})
+                    break
+                if name == "read_file" and max_files is not None and files_read >= max_files:
+                    budget_exhausted_reason = (
+                        f"File read budget exhausted. You have already read {max_files} files. "
+                        "Do not request more read_file calls. Produce your best final answer from the evidence already collected. "
+                        "Explicitly note any information gaps caused by the limited budget."
+                    )
+                    self._append_budget_exhausted_messages(
+                        messages=messages,
+                        tool_calls=response.tool_calls[index + 1 :],
+                        reason=budget_exhausted_reason,
+                    )
+                    messages.append({"role": "user", "content": budget_exhausted_reason})
+                    break
 
             if budget_exhausted_reason is not None:
                 continue
