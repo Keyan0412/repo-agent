@@ -1,52 +1,163 @@
 # repo-agent
 
-This is an EvidenceGraph-driven repo analysis agent.
+`repo-agent` is an LLM-powered repository analysis assistant built for codebase inspection, evidence collection, and structured investigation.
 
-本项目不是简单的 ReAct Agent，而是一个以 EvidenceGraph 为核心工作记忆的代码仓库分析 Agent。
+Instead of treating repository analysis as a single flat chat loop, the project separates high-level reasoning from low-level code inspection. The goal is to make repository answers more traceable, more debuggable, and easier to extend.
 
-## 项目目标
+## What It Does
 
-构建一个面向代码仓库问答与分析的多 Agent 系统，将高层推理、问题分解、仓库调查和证据沉淀拆分为不同职责层。
+- Analyzes a code repository with tool-assisted LLM workflows.
+- Separates planning, investigation, and final synthesis into different agent roles.
+- Stores repository-level working memory under `.cache/repo-agent/`.
+- Records every model request, response, and model-call failure for debugging.
 
-## 架构概览
+## Current Status
 
-系统当前采用三层分工，但中间层已经从旧的 `FileReaderAgent` 路线演进为 `AnalyzerAgent + InvestigatorAgent`：
+This project is still under active development.
 
-- `MainAgent` 负责高层推理、调查调度和最终回答。
-- `AnalyzerAgent` 负责基于 `repo_profile.md` 和历史报告拆解高层调查任务。
-- `InvestigatorAgent` 负责真正接触 repo tools，在预算约束下执行子调查并生成子报告。
-- `.cache/repo-agent/` 负责持久化 `repo_profile.md` 和历史调查报告。
+What is already implemented:
 
-## Agent 分工
+- `LLMClient` with tool-calling support.
+- `InvestigatorAgent` for repository inspection under tool/file budgets.
+- Repository tools such as `read_repo_tree`, `find_text`, `trace_symbol`, and `read_file`.
+- Persistent cache for repository profiles, reports, and LLM call logs.
 
-- `MainAgent` 只处理 evidence，不直接处理 repo 细节。
-- `AnalyzerAgent` 负责问题分解、仓库画像维护和子报告综合，不直接深读代码。
-- `InvestigatorAgent` 负责围绕单个子问题调用 `read_repo_tree / find_text / trace_symbol / read_file`，不直接写入 `EvidenceGraph`。
+What is still incomplete:
 
-## EvidenceGraph 设计
+- The full end-to-end `MainAgent` workflow.
+- Complete `AnalyzerAgent` / `MainAgent` orchestration.
+- A polished user-facing CLI beyond the current inspection/demo flow.
 
-`EvidenceGraph` 使用 append-only 结构保存被主 Agent 采纳的结论，并通过 `based_on` 关系维护高层证据链。
+## Architecture
 
-## Repo Cache
+The project uses a multi-layer design:
 
-仓库级工作记忆持久化在目标仓库下的 `.cache/repo-agent/`：
+- `MainAgent`: high-level reasoning, investigation scheduling, and final answer synthesis.
+- `AnalyzerAgent`: task decomposition and repository-profile-oriented analysis.
+- `InvestigatorAgent`: direct repository inspection through tools with explicit budgets.
 
-- `repo_profile.md`：AnalyzerAgent 使用的自然语言仓库画像。
-- `reports/`：历史 `InvestigationReport` 的 Markdown 缓存。
+This separation is intentional: high-level reasoning should not directly perform unrestricted repository reads, and low-level code inspection should not be responsible for final answer policy.
 
-## Tool 权限边界
+## Installation
 
-- `read_repo_tree`、`find_text`、`trace_symbol`、`read_file` 仅供 `InvestigatorAgent` 使用。
-- `derive_claim` 仅供 `MainAgent` 使用。
+Requirements:
 
-## 使用方式
+- Python 3.12+
+- A DashScope-compatible API key
 
-当前仓库以设计和基础实现为主。`InvestigatorAgent` 已经支持自动多轮 tool-calling；`AnalyzerAgent` 和 `MainAgent` 的完整主流程仍在继续补齐。
+Install dependencies:
 
-当前主设计文档是：
+```bash
+pip install -e .
+```
 
-- `repo-agent_design_profile_reports_cache.md`
+## Configuration
 
-## 开发路线
+Set the following environment variables in `.env` or in your shell:
 
-优先继续完成 `AnalyzerAgent`、`request_investigation` / `request_subinvestigation` 的接线，以及 `MainAgent` 主循环。
+```env
+DASHSCOPE_API_KEY=your_api_key
+DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+REPO_AGENT_MODEL=qwen-plus
+REPO_AGENT_ENABLE_THINKING=false
+```
+
+Notes:
+
+- `DASHSCOPE_API_KEY` is required.
+- `REPO_AGENT_MODEL` defaults to `qwen-plus`.
+- `DASHSCOPE_BASE_URL` defaults to the DashScope OpenAI-compatible endpoint.
+- `REPO_AGENT_ENABLE_THINKING` controls the extra request flag sent to the backend.
+
+## Usage
+
+The most practical entrypoint today is the investigator demo:
+
+```bash
+python inspect/investigator_agent_demo.py summarize --repo-root .
+```
+
+Run a sub-investigation:
+
+```bash
+python inspect/investigator_agent_demo.py subtask --repo-root .
+```
+
+Useful options:
+
+- `--model`: override the model name.
+- `--repo-root`: choose which repository the tools inspect.
+- `--max-tool-calls`: limit tool usage for a subtask.
+- `--max-files`: limit `read_file` calls for a subtask.
+
+## Cache and Debug Output
+
+`repo-agent` writes repository-scoped state under:
+
+```text
+.cache/repo-agent/
+```
+
+Files currently used:
+
+- `repo_profile.md`: natural-language repository profile used by higher-level analysis.
+- `reports/`: cached investigation reports.
+- `llm_calls.jsonl`: one JSON object per model call, including request payloads, model responses, and model-call exceptions.
+
+The `llm_calls.jsonl` file is especially useful when debugging:
+
+- prompt formatting issues
+- invalid tool-call arguments
+- unexpected model output
+- backend/API failures
+
+## Tool Boundaries
+
+Repository inspection tools are intentionally scoped:
+
+- `read_repo_tree`
+- `find_text`
+- `trace_symbol`
+- `read_file`
+
+These are used by the investigation layer rather than exposed as unrestricted high-level behavior. This keeps repository access explicit and easier to reason about.
+
+## Testing
+
+Run the full test suite:
+
+```bash
+pytest
+```
+
+Run only the LLM client tests:
+
+```bash
+pytest tests/test_llm_client.py
+```
+
+## Repository Layout
+
+Key directories:
+
+- `src/repo_agent/agents/`: agent implementations.
+- `src/repo_agent/llm/`: model client and LLM-related utilities.
+- `src/repo_agent/tools/`: repository and agent tools.
+- `src/repo_agent/cache/`: cache-path and persistence helpers.
+- `inspect/`: runnable inspection/demo scripts.
+- `tests/`: automated test suite.
+
+## Limitations
+
+- The project is not yet a finished general-purpose CLI product.
+- Some top-level orchestration paths are still being built out.
+- Current usage is best suited for development, experimentation, and architecture iteration.
+
+## Development Direction
+
+The next major steps are:
+
+- finish `AnalyzerAgent` and `MainAgent` integration
+- complete investigation request routing
+- strengthen the end-to-end user workflow
+- continue improving observability and debugging around model behavior

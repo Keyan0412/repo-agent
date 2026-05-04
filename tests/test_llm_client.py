@@ -1,9 +1,12 @@
 import os
+import json
 from pathlib import Path
 
+import pytest
 from pydantic import BaseModel
 
 from repo_agent.llm.client import DEFAULT_DASHSCOPE_BASE_URL, LLMClient
+from repo_agent.llm.debug import JsonlLLMCallDebugRecorder
 from repo_agent.tools.base import BaseTool, ToolResult
 from repo_agent.tools.registry import ToolRegistry
 
@@ -20,6 +23,12 @@ class _FakeBackend:
         if self.responses is None:
             return _FakeCompletion()
         return _FakeCompletion(self.responses.pop(0))
+
+
+class _ErrorBackend(_FakeBackend):
+    def create(self, **kwargs: object):
+        self.calls.append(kwargs)
+        raise RuntimeError("backend exploded")
 
 
 class _FakeCompletion:
@@ -106,6 +115,31 @@ class _EchoTool(BaseTool):
         return ToolResult(success=True, content=f"echo:{args.text}", metadata={"text": args.text})
 
 
+class _RecordingDebugRecorder:
+    def __init__(self) -> None:
+        self.entries: list[dict] = []
+
+    def record_success(self, *, model: str, payload: dict, response) -> None:
+        self.entries.append(
+            {
+                "status": "success",
+                "model": model,
+                "payload": payload,
+                "response": response,
+            }
+        )
+
+    def record_error(self, *, model: str, payload: dict, error: Exception) -> None:
+        self.entries.append(
+            {
+                "status": "error",
+                "model": model,
+                "payload": payload,
+                "error": error,
+            }
+        )
+
+
 def test_llm_client_loads_env_file(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text(
@@ -130,11 +164,13 @@ def test_llm_client_loads_env_file(tmp_path: Path) -> None:
 
 def test_llm_client_chat_maps_content_and_tool_calls() -> None:
     backend = _FakeBackend()
+    recorder = _RecordingDebugRecorder()
     client = LLMClient(
         model="qwen-plus",
         api_key="sk-test",
         base_url=DEFAULT_DASHSCOPE_BASE_URL,
         backend=backend,
+        debug_recorder=recorder,
     )
 
     response = client.chat(
@@ -148,14 +184,75 @@ def test_llm_client_chat_maps_content_and_tool_calls() -> None:
     assert response.tool_calls[0]["function"]["name"] == "lookup"
     assert backend.calls[0]["model"] == "qwen-plus"
     assert backend.calls[0]["extra_body"]["enable_thinking"] is False
+    assert recorder.entries[0]["status"] == "success"
+    assert recorder.entries[0]["payload"]["messages"][0]["content"] == "hello"
+    assert recorder.entries[0]["response"].content == "hello"
 
 
-def test_llm_client_extract_json_object_handles_wrapped_json() -> None:
+def test_llm_client_chat_records_errors() -> None:
+    backend = _ErrorBackend()
+    recorder = _RecordingDebugRecorder()
+    client = LLMClient(
+        model="qwen-plus",
+        api_key="sk-test",
+        base_url=DEFAULT_DASHSCOPE_BASE_URL,
+        backend=backend,
+        debug_recorder=recorder,
+    )
+
+    try:
+        client.chat(messages=[{"role": "user", "content": "hello"}])
+    except RuntimeError as exc:
+        assert str(exc) == "backend exploded"
+    else:
+        raise AssertionError("Expected RuntimeError")
+
+    assert recorder.entries[0]["status"] == "error"
+    assert recorder.entries[0]["payload"]["messages"][0]["content"] == "hello"
+    assert str(recorder.entries[0]["error"]) == "backend exploded"
+
+
+def test_jsonl_llm_call_debug_recorder_writes_success_and_error_records(tmp_path: Path) -> None:
+    recorder = JsonlLLMCallDebugRecorder.at_repo_cache(tmp_path)
+    client = LLMClient(
+        model="qwen-plus",
+        api_key="sk-test",
+        base_url=DEFAULT_DASHSCOPE_BASE_URL,
+        backend=_FakeBackend(),
+        debug_recorder=recorder,
+    )
+
+    client.chat(messages=[{"role": "user", "content": "ok"}])
+
+    error_client = LLMClient(
+        model="qwen-plus",
+        api_key="sk-test",
+        base_url=DEFAULT_DASHSCOPE_BASE_URL,
+        backend=_ErrorBackend(),
+        debug_recorder=recorder,
+    )
+    try:
+        error_client.chat(messages=[{"role": "user", "content": "boom"}])
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("Expected RuntimeError")
+
+    log_path = tmp_path / ".cache" / "repo-agent" / "llm_calls.jsonl"
+    records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+
+    assert [record["status"] for record in records] == ["success", "error"]
+    assert records[0]["request"]["messages"][0]["content"] == "ok"
+    assert records[0]["response"]["content"] == "hello"
+    assert records[1]["request"]["messages"][0]["content"] == "boom"
+    assert records[1]["error"]["message"] == "backend exploded"
+
+
+def test_llm_client_extract_json_object_raises_with_original_content() -> None:
     client = LLMClient(model="qwen-plus", api_key="sk-test", backend=_FakeBackend())
 
-    payload = client.extract_json_object('prefix {"answer":"ok"} suffix')
-
-    assert payload["answer"] == "ok"
+    with pytest.raises(RuntimeError, match="Failed to parse JSON object from LLM output: prefix"):
+        client.extract_json_object('prefix {"answer":"ok"} suffix')
 
 
 def test_llm_client_run_tool_calling_loop_executes_and_reinjects_tools() -> None:

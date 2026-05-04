@@ -13,6 +13,7 @@ if str(SRC) not in sys.path:
 from repo_agent.agents.investigator_agent import InvestigatorAgent
 from repo_agent.investigation import SubInvestigationTask
 from repo_agent.llm.client import LLMClient
+from repo_agent.llm.debug import JsonlLLMCallDebugRecorder
 from repo_agent.tools.file import ReadFileTool
 from repo_agent.tools.registry import ToolRegistry
 from repo_agent.tools.repo import FindTextTool, ReadRepoTreeTool, TraceSymbolTool
@@ -89,7 +90,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def build_investigator(repo_root: Path, model: str | None) -> InvestigatorAgent:
-    llm_client = LLMClient.from_env(model=model, env_path=ROOT / ".env")
+    llm_client = LLMClient.from_env(
+        model=model,
+        env_path=ROOT / ".env",
+        debug_recorder=JsonlLLMCallDebugRecorder.at_repo_cache(repo_root),
+    )
     tool_registry = ToolRegistry(
         [
             ReadRepoTreeTool(repo_root),

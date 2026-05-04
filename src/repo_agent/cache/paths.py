@@ -9,6 +9,7 @@ class CachePaths:
         self.cache_root = self.repo_path / cache_dir
         self.profile_path = self.cache_root / "repo_profile.md"
         self.reports_dir = self.cache_root / "reports"
+        self.llm_calls_path = self.cache_root / "llm_calls.jsonl"
 
     def ensure_dirs(self) -> None:
         self.cache_root.mkdir(parents=True, exist_ok=True)

@@ -5,9 +5,17 @@ import os
 from pathlib import Path
 from typing import Any
 
+from repo_agent.llm.debug import LLMCallDebugRecorder
 from repo_agent.llm.schemas import LLMResponse
-from repo_agent.tools.base import ToolResult
 from repo_agent.tools.registry import ToolRegistry
+
+try:
+    from openai import OpenAI
+    from openai.types.chat import ChatCompletion, ChatCompletionMessageFunctionToolCall
+except ImportError as exc:
+    raise RuntimeError(
+        "The `openai` package is required for LLMClient. Install project dependencies first."
+    ) from exc
 
 DEFAULT_DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_MODEL = "qwen-plus"
@@ -23,13 +31,22 @@ class LLMClient:
         timeout: float = 60.0,
         enable_thinking: bool = False,
         backend: Any | None = None,
+        debug_recorder: LLMCallDebugRecorder | None = None,
     ) -> None:
+        if backend is None:
+            backend = OpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                timeout=timeout,
+            )
+
         self.model = model
         self.api_key = api_key
         self.base_url = base_url
         self.timeout = timeout
         self.enable_thinking = enable_thinking
         self._backend = backend
+        self.debug_recorder = debug_recorder
 
     @classmethod
     def from_env(
@@ -38,6 +55,7 @@ class LLMClient:
         model: str | None = None,
         env_path: str | Path = ".env",
         timeout: float = 60.0,
+        debug_recorder: LLMCallDebugRecorder | None = None,
     ) -> "LLMClient":
         cls._load_env_file(Path(env_path))
 
@@ -54,6 +72,7 @@ class LLMClient:
             base_url=base_url,
             timeout=timeout,
             enable_thinking=enable_thinking,
+            debug_recorder=debug_recorder,
         )
 
     def chat(
@@ -66,7 +85,6 @@ class LLMClient:
         max_tokens: int | None = None,
         extra_body: dict[str, Any] | None = None,
     ) -> LLMResponse:
-        client = self._get_backend()
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -84,28 +102,40 @@ class LLMClient:
             merged_extra_body.update(extra_body)
         payload["extra_body"] = merged_extra_body
 
-        completion = client.chat.completions.create(**payload)
-        choice = completion.choices[0]
-        message = choice.message
+        try:
+            completion = self._backend.chat.completions.create(**payload)
+            if not isinstance(completion, ChatCompletion):
+                print("here should not use streaming mode")
+                exit(1)
 
-        tool_calls: list[dict[str, Any]] = []
-        if getattr(message, "tool_calls", None):
-            for tool_call in message.tool_calls:
-                function = getattr(tool_call, "function", None)
+            message = completion.choices[0].message
+
+            # construct tool_call information
+            tool_calls = []
+            for tool_call in message.tool_calls or []:
+                if not isinstance(tool_call, ChatCompletionMessageFunctionToolCall):
+                    raise RuntimeError(f"Unexpected tool call type: {type(tool_call).__name__}")
+
                 tool_calls.append(
                     {
-                        "id": getattr(tool_call, "id", None),
-                        "type": getattr(tool_call, "type", None),
+                        "id": tool_call.id,
+                        "type": tool_call.type,
                         "function": {
-                            "name": getattr(function, "name", None),
-                            "arguments": getattr(function, "arguments", None),
+                            "name": tool_call.function.name,
+                            "arguments": tool_call.function.arguments,
                         },
                     }
                 )
 
-        content = message.content or ""
-        raw = completion.model_dump() if hasattr(completion, "model_dump") else json.loads(completion.json())
-        return LLMResponse(content=content, tool_calls=tool_calls, raw=raw)
+            response = LLMResponse(content=message.content or "", tool_calls=tool_calls, raw=completion.model_dump())
+        except Exception as unknown_exc:
+            if self.debug_recorder is not None:
+                self.debug_recorder.record_error(model=self.model, payload=payload, error=unknown_exc)
+            raise
+
+        if self.debug_recorder is not None:
+            self.debug_recorder.record_success(model=self.model, payload=payload, response=response)
+        return response
 
     def run_tool_calling_loop(
         self,
@@ -146,7 +176,7 @@ class LLMClient:
             )
 
             if remaining_calls <= 0:
-                budget_exhausted_reason = (
+                budget_exhausted_reason: str = (
                     f"Tool call budget exhausted. You have already used {max_tool_calls} tool calls. "
                     "Do not request more tools. Produce your best final answer from the evidence already collected. "
                     "Explicitly note any information gaps caused by the limited budget."
@@ -160,7 +190,7 @@ class LLMClient:
 
             for index, tool_call in enumerate(response.tool_calls):
                 if remaining_calls <= 0:
-                    budget_exhausted_reason = (
+                    budget_exhausted_reason: str = (
                         f"Tool call budget exhausted. You have already used {max_tool_calls} tool calls. "
                         "Do not request more tools. Produce your best final answer from the evidence already collected. "
                         "Explicitly note any information gaps caused by the limited budget."
@@ -171,18 +201,20 @@ class LLMClient:
                         reason=budget_exhausted_reason,
                     )
                     break
+
+                # get function name and argument
                 name = tool_call["function"]["name"]
                 arguments_text = tool_call["function"]["arguments"] or "{}"
                 try:
                     arguments = json.loads(arguments_text)
-                except json.JSONDecodeError as exc:
+                except json.JSONDecodeError as decode_error:
                     raise RuntimeError(
                         f"LLM generated invalid tool arguments for `{name}`: {arguments_text}"
-                    ) from exc
+                    ) from decode_error
 
                 if name == "read_file" and max_files is not None:
                     if files_read >= max_files:
-                        budget_exhausted_reason = (
+                        budget_exhausted_reason: str = (
                             f"File read budget exhausted. You have already read {max_files} files. "
                             "Do not request more read_file calls. Produce your best final answer from the evidence already collected. "
                             "Explicitly note any information gaps caused by the limited budget."
@@ -214,35 +246,19 @@ class LLMClient:
                     }
                 )
                 remaining_calls -= 1
+
             if budget_exhausted_reason is not None:
                 continue
 
-    def extract_json_object(self, content: str) -> dict[str, Any]:
+        raise RuntimeError("run_tool_calling_loop exited unexpectedly")
+
+    @staticmethod
+    def extract_json_object(content: str) -> dict[str, Any]:
         text = content.strip()
         try:
             return json.loads(text)
-        except json.JSONDecodeError:
-            start = text.find("{")
-            end = text.rfind("}")
-            if start == -1 or end == -1 or start >= end:
-                raise
-            return json.loads(text[start : end + 1])
-
-    def _get_backend(self) -> Any:
-        if self._backend is None:
-            try:
-                from openai import OpenAI
-            except ImportError as exc:
-                raise RuntimeError(
-                    "The `openai` package is required for LLMClient. Install project dependencies first."
-                ) from exc
-
-            self._backend = OpenAI(
-                api_key=self.api_key,
-                base_url=self.base_url,
-                timeout=self.timeout,
-            )
-        return self._backend
+        except json.JSONDecodeError as decode_error:
+            raise RuntimeError(f"Failed to parse JSON object from LLM output: {text}") from decode_error
 
     @staticmethod
     def _load_env_file(env_path: Path) -> None:
