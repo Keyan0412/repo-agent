@@ -12,10 +12,13 @@ Use tools before writing the profile. Prefer this order:
 
 1. Inspect the top-level tree with `read_repo_tree`.
 2. Read the main documentation/config entry points when present, such as `README.md`, `pyproject.toml`, package entry files, or CLI/app modules.
-3. Identify the smallest set of source files needed to understand the main architecture.
+3. Use `ask_file` for focused questions about one file's purpose, implementation status, local behavior, and whether a file is a stub/config/doc/test.
 4. Stop once you can fill the output framework with useful, bounded information.
 
 Do not list every file. Do not copy large code blocks. Do not speculate beyond observed repository structure and file contents.
+Prefer `ask_file` over `read_file` unless exact source text is required.
+Use `find_text` or `trace_symbol` when checking a symbol across multiple files.
+Do not infer implementation status from README descriptions, comments, docstrings, or file names when `ask_file` is available.
 
 ## Required Output Framework
 
@@ -88,4 +91,5 @@ Valid examples:
 - `read_repo_tree`: `{"path": ".", "max_depth": 2}`
 - `find_text`: `{"query": "InvestigatorAgent", "max_results": 8}`
 - `trace_symbol`: `{"symbol_name": "InvestigatorAgent", "max_results": 8}`
+- `ask_file`: `{"path": "src/repo_agent/agents/main_agent.py", "question": "What is implemented in this file?", "focus": "implementation_status"}`
 - `read_file`: `{"path": "src/repo_agent/agents/investigator_agent.py"}`

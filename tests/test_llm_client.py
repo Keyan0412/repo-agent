@@ -374,3 +374,65 @@ def test_llm_client_rejects_tool_calls_after_budget_exhaustion() -> None:
 
     assert len(backend.calls) == 2
     assert backend.calls[1]["tool_choice"] == "none"
+
+
+def test_llm_client_removes_ask_file_after_ask_file_budget_is_exhausted() -> None:
+    backend = _FakeBackend(
+        responses=[
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_ask",
+                        "type": "function",
+                        "function": {"name": "ask_file", "arguments": "{\"path\": \"a.py\", \"question\": \"What is implemented?\"}"},
+                    }
+                ]
+            },
+            {"content": "{\"answer\":\"done\"}", "tool_calls": []},
+        ]
+    )
+    client = LLMClient(model="qwen-plus", api_key="sk-test", backend=backend)
+
+    class _AskFileArgs(BaseModel):
+        path: str
+        question: str
+
+    class _AskFileTool(BaseTool):
+        name = "ask_file"
+        description = "Ask one file."
+        args_model = _AskFileArgs
+
+        def execute(self, arguments: dict) -> ToolResult:
+            args = _AskFileArgs.model_validate(arguments)
+            return ToolResult(success=True, content="{}", metadata={"path": args.path})
+
+    class _ReadFileArgs(BaseModel):
+        path: str
+
+    class _ReadFileTool(BaseTool):
+        name = "read_file"
+        description = "Read one file."
+        args_model = _ReadFileArgs
+
+        def execute(self, arguments: dict) -> ToolResult:
+            return ToolResult(success=True, content="")
+
+    registry = ToolRegistry([_AskFileTool(), _ReadFileTool()])
+
+    response, executed_tools = client.run_tool_calling_loop(
+        system_prompt="test",
+        user_content="inspect",
+        tool_registry=registry,
+        max_tool_calls=4,
+        max_ask_file_calls=1,
+    )
+
+    assert response.content == "{\"answer\":\"done\"}"
+    assert executed_tools[0]["name"] == "ask_file"
+    second_call_tool_names = {
+        tool["function"]["name"]
+        for tool in backend.calls[1]["tools"]
+    }
+    assert "ask_file" not in second_call_tool_names
+    assert "read_file" in second_call_tool_names
+    assert "ask_file budget exhausted" in backend.calls[1]["messages"][-1]["content"]

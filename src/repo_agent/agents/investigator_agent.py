@@ -18,10 +18,12 @@ class InvestigatorAgent:
         *,
         investigator_prompt_path: Path | None = None,
         repo_profile_initial_prompt_path: Path | None = None,
+        max_ask_file_calls: int | None = 6,
     ) -> None:
         self.llm_client = llm_client
         self.repo_path = Path(repo_path).resolve()
         self.tool_registry = tool_registry
+        self.max_ask_file_calls = max_ask_file_calls
         prompts_dir = Path(__file__).resolve().parent.parent / "prompts"
         self.investigator_prompt_path = investigator_prompt_path or prompts_dir / "investigator_agent.md"
         self.repo_profile_initial_prompt_path = (
@@ -39,12 +41,13 @@ class InvestigatorAgent:
             user_content=(
                 f"User Query:\n{user_query}\n\n"
                 f"Investigation Task:\n{task}\n\n"
-                "You may use read_repo_tree, find_text, trace_symbol, and read_file.\n"
+                "You may use read_repo_tree, find_text, trace_symbol, ask_file, and read_file.\n"
                 "After enough evidence is collected, fill the Repo Profile framework from the system prompt exactly."
             ),
             tool_registry=self.tool_registry,
             max_tool_calls=16,
             max_files=10,
+            max_ask_file_calls=self.max_ask_file_calls,
         )
         profile = response.content.strip()
         if not profile:
@@ -75,6 +78,7 @@ class InvestigatorAgent:
             tool_registry=self.tool_registry,
             max_tool_calls=subtask.max_tool_calls,
             max_files=subtask.max_files,
+            max_ask_file_calls=self.max_ask_file_calls,
         )
         report_payload = self._parse_subreport_payload(response.content)
         files_checked, symbols_checked, file_contents = self._collect_execution_artifacts(
@@ -143,6 +147,13 @@ class InvestigatorAgent:
                     files_checked.append(path)
                 if path:
                     file_contents[path] = result.content
+            elif tool_name == "ask_file":
+                path = str(metadata.get("path") or arguments.get("path") or "")
+                if path and path not in files_checked and len(files_checked) < max_files:
+                    files_checked.append(path)
+                numbered_content = metadata.get("numbered_content")
+                if path and isinstance(numbered_content, str):
+                    file_contents[path] = numbered_content
             elif tool_name == "trace_symbol":
                 symbol_name = str(metadata.get("symbol_name") or arguments.get("symbol_name") or "")
                 if symbol_name and symbol_name not in symbols_checked:

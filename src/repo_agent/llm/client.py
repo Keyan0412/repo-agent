@@ -143,6 +143,7 @@ class LLMClient:
         tool_registry: ToolRegistry,
         max_tool_calls: int,
         max_files: int | None = None,
+        max_ask_file_calls: int | None = None,
         temperature: float | None = 0,
     ) -> tuple[LLMResponse, list[dict[str, Any]]]:
         messages: list[dict[str, Any]] = [
@@ -153,14 +154,19 @@ class LLMClient:
         executed_tools: list[dict[str, Any]] = []
         remaining_calls = max_tool_calls
         files_read = 0
+        ask_file_calls = 0
+        disabled_tool_names: set[str] = set()
+        if max_ask_file_calls is not None and max_ask_file_calls <= 0:
+            disabled_tool_names.add("ask_file")
         budget_exhausted_reason: str | None = None
 
         while True:
             tools_allowed = budget_exhausted_reason is None
+            active_tools = self._filter_tools(tools, disabled_tool_names)
             response = self.chat(
                 messages=messages,
-                tools=tools,
-                tool_choice="auto" if tools_allowed else "none",
+                tools=active_tools,
+                tool_choice="auto" if tools_allowed and active_tools else "none",
                 temperature=temperature,
             )
             if not tools_allowed and response.tool_calls:
@@ -213,6 +219,34 @@ class LLMClient:
                         f"LLM generated invalid tool arguments for `{name}`: {arguments_text}"
                     ) from decode_error
 
+                if name in disabled_tool_names:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "name": name,
+                            "content": f"`{name}` is disabled because its budget has been exhausted. Use another available tool or answer from existing evidence.",
+                        }
+                    )
+                    continue
+
+                if name == "ask_file" and max_ask_file_calls is not None:
+                    if ask_file_calls >= max_ask_file_calls:
+                        disabled_tool_names.add("ask_file")
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call["id"],
+                                "name": name,
+                                "content": (
+                                    f"ask_file budget exhausted. You have already used {max_ask_file_calls} ask_file calls. "
+                                    "Do not request more ask_file calls. Use find_text, trace_symbol, read_file, or answer from existing evidence."
+                                ),
+                            }
+                        )
+                        continue
+                    ask_file_calls += 1
+
                 if name == "read_file" and max_files is not None:
                     if files_read >= max_files:
                         budget_exhausted_reason: str = (
@@ -247,6 +281,17 @@ class LLMClient:
                     }
                 )
                 remaining_calls -= 1
+                if name == "ask_file" and max_ask_file_calls is not None and ask_file_calls >= max_ask_file_calls:
+                    disabled_tool_names.add("ask_file")
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"ask_file budget exhausted. You have already used {max_ask_file_calls} ask_file calls. "
+                                "Do not request more ask_file calls. Other available tools may still be used if needed."
+                            ),
+                        }
+                    )
                 if remaining_calls <= 0:
                     budget_exhausted_reason = (
                         f"Tool call budget exhausted. You have already used {max_tool_calls} tool calls. "
@@ -332,3 +377,16 @@ class LLMClient:
                     "content": content,
                 }
             )
+
+    @staticmethod
+    def _filter_tools(
+        tools: list[dict[str, Any]],
+        disabled_tool_names: set[str],
+    ) -> list[dict[str, Any]]:
+        if not disabled_tool_names:
+            return tools
+        return [
+            tool
+            for tool in tools
+            if tool.get("function", {}).get("name") not in disabled_tool_names
+        ]
