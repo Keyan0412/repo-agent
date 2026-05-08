@@ -89,9 +89,50 @@ def test_ask_file_returns_structured_file_answer(tmp_path: Path) -> None:
     assert result.metadata["line_count"] == 1
     assert result.metadata["implementation_status"] == "stub_or_placeholder"
     assert "numbered_content" in result.metadata
+    assert "line_map_content" in result.metadata
+    assert result.metadata["valid_line_numbers"] == [1]
     assert backend.calls[0]["tool_choice"] == "none"
     assert "max_tokens" not in backend.calls[0]
     assert "<file_content path=\"main_agent.py\" trust=\"untrusted\" lines=\"1\">" in backend.calls[0]["messages"][1]["content"]
+    assert '"lines": {' in backend.calls[0]["messages"][1]["content"]
+    assert '"1": "\\"\\\"\\"MainAgent coordinates investigations and evidence updates.\\"\\\"\\""' in backend.calls[0]["messages"][1]["content"]
+
+
+def test_ask_file_rejects_observed_fact_lines_outside_available_content(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "session.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
+    backend = _FakeBackend(
+        {
+            "content": json.dumps(
+                {
+                    "path": "session.py",
+                    "question": "What is implemented?",
+                    "answer": "Two assignments exist.",
+                    "confidence": "high",
+                    "implementation_status": "implemented",
+                    "file_role": "Small module.",
+                    "observed_facts": [
+                        {
+                            "line_start": 2,
+                            "line_end": 3,
+                            "fact": "The second assignment exists.",
+                        }
+                    ],
+                    "not_evidence": [],
+                    "needs_cross_file_check": False,
+                    "suggested_followups": [],
+                }
+            )
+        }
+    )
+    client = LLMClient(model="qwen-plus", api_key="test-key", backend=backend)
+    tool = AskFileTool(repo, client)
+
+    result = tool.execute({"path": "session.py", "question": "What is implemented?"})
+
+    assert result.success is False
+    assert "observed_facts lines outside available file content" in result.content
 
 
 def test_ask_file_rejects_paths_outside_repo(tmp_path: Path) -> None:

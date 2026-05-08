@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from repo_agent.agents.json_repair_agent import JsonRepairAgent
 from repo_agent.investigation import Observation, SubInvestigationReport, SubInvestigationTask
 from repo_agent.llm.client import LLMClient
 from repo_agent.llm.schemas import InvestigatorSubreportPayload
@@ -18,12 +19,12 @@ class InvestigatorAgent:
         *,
         investigator_prompt_path: Path | None = None,
         repo_profile_initial_prompt_path: Path | None = None,
-        max_ask_file_calls: int | None = 6,
+        json_repair_agent: JsonRepairAgent | None = None,
     ) -> None:
         self.llm_client = llm_client
         self.repo_path = Path(repo_path).resolve()
         self.tool_registry = tool_registry
-        self.max_ask_file_calls = max_ask_file_calls
+        self.json_repair_agent = json_repair_agent or JsonRepairAgent(llm_client)
         prompts_dir = Path(__file__).resolve().parent.parent / "prompts"
         self.investigator_prompt_path = investigator_prompt_path or prompts_dir / "investigator_agent.md"
         self.repo_profile_initial_prompt_path = (
@@ -34,6 +35,8 @@ class InvestigatorAgent:
         self,
         user_query: str,
         task: str,
+        *,
+        max_ask_file_calls: int | None = 40,
     ) -> str:
         prompt = self.repo_profile_initial_prompt_path.read_text(encoding="utf-8").strip()
         response, _ = self.llm_client.run_tool_calling_loop(
@@ -47,7 +50,7 @@ class InvestigatorAgent:
             tool_registry=self.tool_registry,
             max_tool_calls=16,
             max_files=10,
-            max_ask_file_calls=self.max_ask_file_calls,
+            max_ask_file_calls=max_ask_file_calls,
         )
         profile = response.content.strip()
         if not profile:
@@ -70,15 +73,12 @@ class InvestigatorAgent:
                 f"Expected Evidence: {', '.join(subtask.expected_evidence) or 'None'}\n"
                 f"Known Information:\n{subtask.known_information or 'None'}\n\n"
                 "Use tools as needed. Stay within the subtask scope.\n"
-                "When ready, return strict JSON with keys: answer, confidence, unresolved, "
-                "profile_update_suggestion, evidence_spans, additional_tool_calls_needed, "
-                "additional_file_reads_needed.\n"
-                "Each evidence_spans item must contain: file_path, start_line, end_line, summary."
+                f"{self._subreport_output_contract()}"
             ),
             tool_registry=self.tool_registry,
             max_tool_calls=subtask.max_tool_calls,
             max_files=subtask.max_files,
-            max_ask_file_calls=self.max_ask_file_calls,
+            max_ask_file_calls=subtask.max_ask_file_calls,
         )
         report_payload = self._parse_subreport_payload(response.content)
         files_checked, symbols_checked, file_contents = self._collect_execution_artifacts(
@@ -106,15 +106,42 @@ class InvestigatorAgent:
             additional_file_reads_needed=report_payload["additional_file_reads_needed"],
         )
 
-    def _parse_subreport_payload(self, response_content: str) -> dict[str, Any]:
-        try:
-            payload = self.llm_client.extract_json_object(response_content)
-        except Exception as exc:
-            raise RuntimeError(
-                "InvestigatorAgent received invalid JSON from the LLM: "
-                f"{response_content}"
-            ) from exc
+    @staticmethod
+    def _subreport_output_contract() -> str:
+        return """
+Final output contract:
+Return exactly one strict JSON object and no prose or Markdown fences.
 
+Required top-level keys:
+{
+  "answer": "short synthesis bounded by inspected evidence",
+  "confidence": "high | medium | low",
+  "unresolved": [],
+  "profile_update_suggestion": null,
+  "evidence_spans": [],
+  "additional_tool_calls_needed": 0,
+  "additional_file_reads_needed": 0
+}
+
+Hard requirements:
+- `confidence` must be exactly lowercase `high`, `medium`, or `low`.
+- `unresolved` must be a list of strings.
+- `profile_update_suggestion` must be a string or null.
+- `additional_tool_calls_needed` and `additional_file_reads_needed` must be integers.
+- Every evidence span must contain `file_path`, `start_line`, `end_line`, and `summary`.
+- Evidence span line numbers must be positive integers; never use 0.
+- Evidence spans may only cite files inspected with `ask_file` or `read_file`.
+- Do not cite read_repo_tree, find_text, trace_symbol, directory listings, or unread files in `evidence_spans`.
+- If budget was exhausted, lower confidence when appropriate, list missing checks in `unresolved`, and estimate additional budget fields.
+""".strip()
+
+    def _parse_subreport_payload(self, response_content: str) -> dict[str, Any]:
+        payload = self.llm_client.extract_json_object(
+            response_content,
+            repair_agent=self.json_repair_agent,
+            target_name="InvestigatorSubreportPayload",
+            json_schema=InvestigatorSubreportPayload.model_json_schema(),
+        )
         try:
             validated = InvestigatorSubreportPayload.model_validate(payload)
         except Exception as exc:

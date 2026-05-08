@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -86,6 +85,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=10,
         help="Max files to read for the subtask.",
     )
+    subtask.add_argument(
+        "--max-ask-file-calls",
+        type=int,
+        default=30,
+        help="Max ask_file calls for the subtask.",
+    )
 
     return parser
 
@@ -96,18 +101,12 @@ def build_investigator(repo_root: Path, model: str | None) -> InvestigatorAgent:
         env_path=ROOT / ".env",
         debug_recorder=JsonlLLMCallDebugRecorder.at_repo_cache(repo_root),
     )
-    ask_file_max_chars = _env_int("REPO_AGENT_ASK_FILE_MAX_CHARS", 50_000)
-    max_ask_file_calls = _env_optional_int("REPO_AGENT_MAX_ASK_FILE_CALLS", 6)
     tool_registry = ToolRegistry(
         [
             ReadRepoTreeTool(repo_root),
             FindTextTool(repo_root),
             TraceSymbolTool(repo_root),
-            AskFileTool(
-                repo_root,
-                llm_client,
-                max_chars=ask_file_max_chars,
-            ),
+            AskFileTool(repo_root, llm_client),
             ReadFileTool(repo_root),
         ]
     )
@@ -115,31 +114,7 @@ def build_investigator(repo_root: Path, model: str | None) -> InvestigatorAgent:
         llm_client=llm_client,
         repo_path=repo_root,
         tool_registry=tool_registry,
-        max_ask_file_calls=max_ask_file_calls,
     )
-
-
-def _env_int(name: str, default: int) -> int:
-    value = os.getenv(name)
-    if value is None or not value.strip():
-        return default
-    try:
-        return int(value)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be an integer") from exc
-
-
-def _env_optional_int(name: str, default: int | None) -> int | None:
-    value = os.getenv(name)
-    if value is None or not value.strip():
-        return default
-    if value.strip().lower() in {"none", "null", "off"}:
-        return None
-    try:
-        return int(value)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be an integer, none, null, or off") from exc
-
 
 def main() -> int:
     args = build_parser().parse_args()
@@ -157,6 +132,7 @@ def main() -> int:
             profile = investigator.summarize_repo(
                 user_query=args.user_query,
                 task=args.task,
+                max_ask_file_calls=40,
             )
             print("mode: summarize")
             print("profile:")
@@ -172,6 +148,7 @@ def main() -> int:
             known_information=args.known_information,
             max_tool_calls=args.max_tool_calls,
             max_files=args.max_files,
+            max_ask_file_calls=args.max_ask_file_calls,
         )
         report = investigator.investigate_subtask(subtask=subtask)
         print("mode: subtask")

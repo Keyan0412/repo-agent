@@ -11,5 +11,9 @@ That field should combine:
 - already-known facts relevant to the subquestion
 - likely files, symbols, or behaviors worth searching first
 
+Set `max_ask_file_calls` explicitly for each subquestion.
+Use at least 3-4 times the `max_files` value because `ask_file` is cheaper than `read_file`
+and should be preferred for implementation-status and local-behavior checks.
+
 Do not dump the full repo profile into `known_information`.
 Keep it short, task-specific, and action-guiding.

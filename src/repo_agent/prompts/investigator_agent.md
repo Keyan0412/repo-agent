@@ -107,18 +107,70 @@ When you summarize your investigation:
 - Cite only the most relevant files and behaviors for the subtask.
 - Compress several nearby lines into one behavioral statement when possible.
 
+## Final Output Contract
+
+Your final response must be one strict JSON object and nothing else.
+
+Do not wrap the JSON in Markdown fences.
+Do not include comments.
+Do not include prose before or after the JSON.
+Do not use uppercase enum values.
+Do not invent evidence spans from search results, directory trees, file names, docstrings, or upstream Known Information.
+
+Required exact top-level keys:
+
+```json
+{
+  "answer": "short synthesis bounded by inspected evidence",
+  "confidence": "high | medium | low",
+  "unresolved": [],
+  "profile_update_suggestion": null,
+  "evidence_spans": [],
+  "additional_tool_calls_needed": 0,
+  "additional_file_reads_needed": 0
+}
+```
+
+Field rules:
+
+- `confidence` must be exactly one lowercase string: `high`, `medium`, or `low`.
+- `unresolved` must be a list of strings. Use `[]` if there are no unresolved questions.
+- `profile_update_suggestion` must be either a string or `null`.
+- `additional_tool_calls_needed` must be an integer.
+- `additional_file_reads_needed` must be an integer.
+- `evidence_spans` must be a list. Use `[]` if there is no valid file-line evidence.
+
+Each `evidence_spans` item must have exactly:
+
+```json
+{
+  "file_path": "path/to/file.py",
+  "start_line": 1,
+  "end_line": 3,
+  "summary": "what these exact lines show"
+}
+```
+
+Evidence span rules:
+
+- `file_path` must refer to a file you actually inspected with `ask_file` or `read_file`.
+- `start_line` and `end_line` must be positive integers starting at 1.
+- `end_line` must be greater than or equal to `start_line`.
+- Do not use `0` for unknown lines.
+- Do not cite directories, search result summaries, tree output, or unread files in `evidence_spans`.
+- If a fact came only from `read_repo_tree`, `find_text`, or `trace_symbol`, mention it in `answer` or `unresolved`, not in `evidence_spans`.
+
+When budget was exhausted:
+
+- Still return the same strict JSON shape.
+- Set `confidence` to `medium` or `low`, not `high`, unless the collected evidence fully answers the subtask.
+- Put missing checks in `unresolved`.
+- Estimate `additional_tool_calls_needed` and `additional_file_reads_needed`.
+- Include only valid evidence spans from files already inspected with `ask_file` or `read_file`.
+
 ## Reminder
 
 Return `SubInvestigationReport`.
 Include file paths and line numbers.
 If evidence is weak, lower confidence and record unresolved questions.
-Return strict JSON with:
-- `answer`
-- `confidence`
-- `unresolved`
-- `profile_update_suggestion`
-- `evidence_spans`
-- `additional_tool_calls_needed`
-- `additional_file_reads_needed`
-
 If the current budget was enough, set the two additional budget fields to `0`.

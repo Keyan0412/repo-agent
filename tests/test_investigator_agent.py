@@ -202,6 +202,9 @@ def test_investigate_subtask_uses_multi_round_tool_calling(tmp_path: Path) -> No
     assert "Repo Profile:" not in first_user_message
     assert "Search Hints:" not in first_user_message
     assert "Known Information:\nKnown Components: worker module. Search first for execute_task." in first_user_message
+    assert "Final output contract:" in first_user_message
+    assert "`confidence` must be exactly lowercase `high`, `medium`, or `low`." in first_user_message
+    assert "Evidence spans may only cite files inspected with `ask_file` or `read_file`." in first_user_message
 
 
 def test_investigate_subtask_forces_output_when_file_budget_is_exhausted(tmp_path: Path) -> None:
@@ -314,6 +317,66 @@ def test_investigate_subtask_raises_on_invalid_payload_field_types(tmp_path: Pat
 
     with pytest.raises(RuntimeError, match="invalid field types"):
         agent.investigate_subtask(subtask)
+
+
+def test_investigate_subtask_repairs_fenced_json_output(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "worker.py").write_text("def execute_task():\n    return 'done'\n", encoding="utf-8")
+
+    fenced_json = (
+        '```json\n'
+        '{"answer":"`execute_task` is implemented in worker.py.",'
+        '"confidence":"high","unresolved":[],"profile_update_suggestion":null,'
+        '"evidence_spans":[{"file_path":"worker.py","start_line":1,"end_line":2,"summary":"execute_task returns done."}],'
+        '"additional_tool_calls_needed":0,"additional_file_reads_needed":0}'
+        '\n```'
+    )
+    repaired_json = (
+        '{"answer":"`execute_task` is implemented in worker.py.",'
+        '"confidence":"high","unresolved":[],"profile_update_suggestion":null,'
+        '"evidence_spans":[{"file_path":"worker.py","start_line":1,"end_line":2,"summary":"execute_task returns done."}],'
+        '"additional_tool_calls_needed":0,"additional_file_reads_needed":0}'
+    )
+    backend = _FakeBackend(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_read",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path": "worker.py"}',
+                        },
+                    }
+                ]
+            },
+            {"content": fenced_json},
+            {"content": repaired_json, "tool_calls": []},
+        ]
+    )
+    llm_client = LLMClient(model="qwen-plus", api_key="test-key", backend=backend)
+    agent = InvestigatorAgent(llm_client=llm_client, repo_path=repo, tool_registry=_build_tool_registry(repo))
+    subtask = SubInvestigationTask(
+        id="S5",
+        parent_task_id="T1",
+        question="Inspect execute_task",
+        purpose="Check fenced JSON repair",
+        expected_evidence=["definition lines"],
+        known_information="Read worker.py.",
+        max_tool_calls=2,
+        max_files=1,
+    )
+
+    report = agent.investigate_subtask(subtask)
+
+    assert report.answer == "`execute_task` is implemented in worker.py."
+    assert report.confidence == "high"
+    assert report.observations[0].file_path == "worker.py"
+    assert len(backend.calls) == 3
+    repair_prompt = backend.calls[2]["messages"][0]["content"]
+    assert "JsonRepairAgent" in repair_prompt
+    assert backend.calls[2]["tool_choice"] == "none"
 
 
 def test_investigate_subtask_raises_on_unread_evidence_span_file(tmp_path: Path) -> None:

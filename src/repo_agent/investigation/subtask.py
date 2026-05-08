@@ -12,3 +12,4 @@ class SubInvestigationTask(BaseModel):
     known_information: str | None = None
     max_tool_calls: int = 4
     max_files: int = 3
+    max_ask_file_calls: int = 12

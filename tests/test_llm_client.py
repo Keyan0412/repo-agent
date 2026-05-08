@@ -255,6 +255,33 @@ def test_llm_client_extract_json_object_raises_with_original_content() -> None:
         client.extract_json_object('prefix {"answer":"ok"} suffix')
 
 
+class _RepairAgent:
+    def __init__(self, repaired: str) -> None:
+        self.repaired = repaired
+        self.calls: list[dict] = []
+
+    def repair_json(self, **kwargs: object) -> str:
+        self.calls.append(kwargs)
+        return self.repaired
+
+
+def test_llm_client_extract_json_object_uses_repair_agent_on_parse_failure() -> None:
+    client = LLMClient(model="qwen-plus", api_key="sk-test", backend=_FakeBackend())
+    repair_agent = _RepairAgent('{"answer":"ok"}')
+
+    payload = client.extract_json_object(
+        '```json\n{"answer":"ok"}\n```',
+        repair_agent=repair_agent,
+        target_name="DemoPayload",
+        json_schema={"type": "object"},
+    )
+
+    assert payload == {"answer": "ok"}
+    assert repair_agent.calls[0]["target_name"] == "DemoPayload"
+    assert repair_agent.calls[0]["json_schema"] == {"type": "object"}
+    assert "```json" in repair_agent.calls[0]["raw_content"]
+
+
 def test_llm_client_run_tool_calling_loop_executes_and_reinjects_tools() -> None:
     backend = _FakeBackend(
         responses=[

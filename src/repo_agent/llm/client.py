@@ -324,13 +324,39 @@ class LLMClient:
 
         raise RuntimeError("run_tool_calling_loop exited unexpectedly")
 
-    @staticmethod
-    def extract_json_object(content: str) -> dict[str, Any]:
+    def extract_json_object(
+        self,
+        content: str,
+        *,
+        repair_agent: Any | None = None,
+        target_name: str | None = None,
+        json_schema: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         text = content.strip()
         try:
             return json.loads(text)
         except json.JSONDecodeError as decode_error:
-            raise RuntimeError(f"Failed to parse JSON object from LLM output: {text}") from decode_error
+            if repair_agent is None:
+                raise RuntimeError(f"Failed to parse JSON object from LLM output: {text}") from decode_error
+            if target_name is None or json_schema is None:
+                raise RuntimeError(
+                    "JSON repair requires target_name and json_schema"
+                ) from decode_error
+
+            repaired_content = repair_agent.repair_json(
+                raw_content=content,
+                target_name=target_name,
+                json_schema=json_schema,
+                error=decode_error,
+            )
+            repaired_text = repaired_content.strip()
+            try:
+                return json.loads(repaired_text)
+            except json.JSONDecodeError as repair_decode_error:
+                raise RuntimeError(
+                    "Failed to parse JSON object from LLM output after repair: "
+                    f"{repaired_text}"
+                ) from repair_decode_error
 
     @staticmethod
     def _load_env_file(env_path: Path) -> None:

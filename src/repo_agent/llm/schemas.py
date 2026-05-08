@@ -38,3 +38,30 @@ class InvestigatorSubreportPayload(BaseModel):
     evidence_spans: list[EvidenceSpan] = Field(default_factory=list)
     additional_tool_calls_needed: int = 0
     additional_file_reads_needed: int = 0
+
+
+class AnalyzerPlanPayload(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    class Subquestion(BaseModel):
+        model_config = ConfigDict(strict=True)
+
+        question: str
+        purpose: str
+        expected_evidence: list[str] = Field(default_factory=list)
+        known_information: str | None = None
+        max_tool_calls: int = 4
+        max_files: int = 3
+        max_ask_file_calls: int = 12
+
+    goal: str
+    subquestions: list[Subquestion]
+    synthesis_strategy: str
+
+
+class AnalyzerReportPayload(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    summary: str
+    remaining_questions: list[str] = Field(default_factory=list)
+    profile_update_summary: str | None = None

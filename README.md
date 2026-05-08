@@ -89,6 +89,7 @@ Useful options:
 - `--repo-root`: choose which repository the tools inspect.
 - `--max-tool-calls`: limit tool usage for a subtask.
 - `--max-files`: limit `read_file` calls for a subtask.
+- `--max-ask-file-calls`: limit `ask_file` calls for a subtask.
 
 ## LLM Call Viewer
 
