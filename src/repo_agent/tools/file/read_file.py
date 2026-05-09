@@ -18,9 +18,16 @@ class ReadFileTool(BaseTool):
     description = "Read a single file with line numbers."
     args_model = ReadFileArgs
 
-    def __init__(self, repo_root: str | Path, *, max_chars: int = 50_000) -> None:
+    def __init__(
+        self,
+        repo_root: str | Path,
+        *,
+        max_chars: int = 50_000,
+        require_summary_over_chars: int | None = None,
+    ) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.max_chars = max_chars
+        self.require_summary_over_chars = require_summary_over_chars
 
     def execute(self, arguments: dict[str, object]) -> ToolResult:
         args = ReadFileArgs.model_validate(arguments)
@@ -52,6 +59,27 @@ class ReadFileTool(BaseTool):
             f"{line_no} | {line}"
             for line_no, line in enumerate(selected_lines, start=start_line)
         )
+
+        if (
+            self.require_summary_over_chars is not None
+            and len(numbered) > self.require_summary_over_chars
+        ):
+            return ToolResult(
+                success=False,
+                content=(
+                    f"file content is too large to read directly: {args.path}. "
+                    "Use summarize_files for related file groups, or summarize_file for this file."
+                ),
+                metadata={
+                    "path": target.relative_to(self.repo_root).as_posix(),
+                    "line_count": line_count,
+                    "start_line": start_line,
+                    "end_line": min(end_line, line_count),
+                    "requires_summary": True,
+                    "content_chars": len(numbered),
+                    "max_direct_chars": self.require_summary_over_chars,
+                },
+            )
 
         # truncated if too long
         truncated = False

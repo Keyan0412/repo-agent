@@ -3,7 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from repo_agent.agents.main_agent import MainAgent
-from repo_agent.investigation import InvestigationReport, InvestigationTask, Observation
+from repo_agent.investigation import (
+    InvestigationReport,
+    InvestigationTask,
+    Observation,
+)
 from repo_agent.llm.schemas import LLMResponse
 from repo_agent.runtime.session import AgentSession
 
@@ -120,6 +124,90 @@ def test_main_agent_investigates_and_finalizes() -> None:
     assert "调查结果 [0] R-T0001" in all_message_text
     assert "reports_used" in all_message_text
     assert "O1" in all_message_text
+
+
+def test_main_agent_uses_configured_default_investigator_tool_budget() -> None:
+    llm_client = _FakeLLMClient(
+        [
+            LLMResponse(
+                tool_calls=[
+                    _tool_call(
+                        "call_investigate",
+                        "request_investigation",
+                        '{"task":"Check default budget","missing_information":[]}',
+                    )
+                ]
+            ),
+            LLMResponse(
+                tool_calls=[
+                    _tool_call(
+                        "call_final",
+                        "final_answer",
+                        '{"answer":"done","reports_used":[0]}',
+                    )
+                ]
+            ),
+        ]
+    )
+    session = AgentSession()
+    investigator = _FakeInvestigationProvider()
+    agent = MainAgent(
+        llm_client=llm_client,  # type: ignore[arg-type]
+        session=session,
+        investigator=investigator,
+        max_investigator_tool_calls=11,
+        max_investigator_file_reads=13,
+    )
+
+    assert agent.run("What is the default budget?") == "done"
+
+    assert investigator.tasks[0].max_tool_calls == 11
+    assert investigator.tasks[0].max_file_reads == 13
+    request_schema = next(
+        tool
+        for tool in llm_client.calls[0]["tools"]
+        if tool["function"]["name"] == "request_investigation"
+    )
+    assert request_schema["function"]["parameters"]["properties"]["max_tool_calls"]["default"] == 11
+    assert request_schema["function"]["parameters"]["properties"]["max_file_reads"]["default"] == 13
+
+
+def test_main_agent_emits_tool_error_event_when_tool_fails() -> None:
+    llm_client = _FakeLLMClient(
+        [
+            LLMResponse(
+                tool_calls=[
+                    _tool_call(
+                        "call_unknown",
+                        "unknown_tool",
+                        "{}",
+                    )
+                ]
+            ),
+            LLMResponse(
+                tool_calls=[
+                    _tool_call(
+                        "call_final",
+                        "final_answer",
+                        '{"answer":"done","reports_used":[]}',
+                    )
+                ]
+            ),
+        ]
+    )
+    events = _RecordingEventSink()
+    agent = MainAgent(
+        llm_client=llm_client,  # type: ignore[arg-type]
+        session=AgentSession(),
+        investigator=_FakeInvestigationProvider(),
+        event_sink=events,
+    )
+
+    assert agent.run("Trigger a tool failure.") == "done"
+
+    assert events.events[0][0] == "main.tool_error"
+    assert events.events[0][1]["name"] == "unknown_tool"
+    assert "unknown tool" in events.events[0][1]["error"]
 
 
 def test_main_agent_requires_final_answer_tool() -> None:

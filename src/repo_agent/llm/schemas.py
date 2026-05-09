@@ -21,7 +21,7 @@ class FileReaderAnswer(BaseModel):
     limitations: list[str] = Field(default_factory=list)
 
 
-class InvestigatorSubreportPayload(BaseModel):
+class InvestigatorReportPayload(BaseModel):
     model_config = ConfigDict(strict=True)
 
     class EvidenceSpan(BaseModel):
@@ -38,3 +38,42 @@ class InvestigatorSubreportPayload(BaseModel):
     evidence_spans: list[EvidenceSpan] = Field(default_factory=list)
     additional_tool_calls_needed: int = 0
     additional_file_reads_needed: int = 0
+
+
+class FileSummaryPayload(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    class EvidenceRegion(BaseModel):
+        model_config = ConfigDict(strict=True)
+
+        start_line: int
+        end_line: int
+        label: str
+        summary: str
+
+    path: str
+    role: str
+    key_points: list[str] = Field(default_factory=list)
+    evidence_regions: list[EvidenceRegion] = Field(default_factory=list)
+
+
+class FilesSummaryPayload(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    class FileSummary(BaseModel):
+        model_config = ConfigDict(strict=True)
+
+        path: str
+        role: str
+        key_points: list[str] = Field(default_factory=list)
+        evidence_regions: list[FileSummaryPayload.EvidenceRegion] = Field(default_factory=list)
+
+    class CrossFileFinding(BaseModel):
+        model_config = ConfigDict(strict=True)
+
+        summary: str
+        files: list[str] = Field(default_factory=list)
+
+    focus: str
+    files: list[FileSummary] = Field(default_factory=list)
+    cross_file_findings: list[CrossFileFinding] = Field(default_factory=list)

@@ -27,6 +27,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
+repo_agent = ["prompts/*.md"]
 repo_agent_viewer = ["templates/*.html"]
 
 [tool.pytest.ini_options]

@@ -166,6 +166,30 @@ def test_llm_client_loads_env_file(tmp_path: Path) -> None:
     assert client.enable_thinking is False
 
 
+def test_llm_client_from_env_accepts_runtime_overrides(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "CUSTOM_DASHSCOPE_KEY=sk-custom\n"
+        "DASHSCOPE_BASE_URL=https://ignored.example/v1\n"
+        "REPO_AGENT_ENABLE_THINKING=false\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("CUSTOM_DASHSCOPE_KEY", raising=False)
+    monkeypatch.delenv("DASHSCOPE_BASE_URL", raising=False)
+    monkeypatch.delenv("REPO_AGENT_ENABLE_THINKING", raising=False)
+
+    client = LLMClient.from_env(
+        env_path=env_file,
+        api_key_env="CUSTOM_DASHSCOPE_KEY",
+        base_url="https://configured.example/v1",
+        enable_thinking=True,
+    )
+
+    assert client.api_key == "sk-custom"
+    assert client.base_url == "https://configured.example/v1"
+    assert client.enable_thinking is True
+
+
 def test_llm_client_supports_complex_and_simple_env_models(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text(
@@ -405,17 +429,20 @@ def test_llm_client_run_tool_calling_loop_executes_and_reinjects_tools() -> None
     )
     client = LLMClient(model="qwen-plus", api_key="sk-test", backend=backend)
     registry = ToolRegistry([_EchoTool()])
+    observed_tools: list[dict] = []
 
     response, executed_tools = client.run_tool_calling_loop(
         system_prompt="test",
         user_content="say hi",
         tool_registry=registry,
         max_tool_calls=2,
+        on_tool_result=observed_tools.append,
     )
 
     assert response.content == "{\"answer\":\"done\"}"
     assert executed_tools[0]["name"] == "echo"
     assert executed_tools[0]["result"].content == "echo:hello"
+    assert observed_tools == executed_tools
     assert backend.calls[1]["messages"][-1]["role"] == "tool"
 
 
@@ -468,10 +495,80 @@ def test_llm_client_run_tool_calling_loop_forces_final_answer_after_budget_exhau
     assert executed_tools[0]["arguments"]["path"] == "a.py"
     assert backend.calls[1]["tools"]
     assert backend.calls[1]["tool_choice"] == "none"
-    assert "文件读取预算已耗尽" in backend.calls[1]["messages"][-1]["content"]
+    assert "文件访问预算已耗尽" in backend.calls[1]["messages"][-1]["content"]
 
 
-def test_llm_client_rejects_tool_calls_after_budget_exhaustion() -> None:
+def test_llm_client_counts_summarize_files_paths_against_file_budget() -> None:
+    backend = _FakeBackend(
+        responses=[
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "summarize_files",
+                            "arguments": "{\"paths\": [\"a.py\", \"b.py\"]}",
+                        },
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{\"path\": \"c.py\"}"},
+                    },
+                ]
+            },
+            {"content": "{\"answer\":\"budget limited\"}", "tool_calls": []},
+        ]
+    )
+    client = LLMClient(model="qwen-plus", api_key="sk-test", backend=backend)
+
+    class _SummarizeFilesArgs(BaseModel):
+        paths: list[str]
+
+    class _SummarizeFilesTool(BaseTool):
+        name = "summarize_files"
+        description = "Summarize files."
+        args_model = _SummarizeFilesArgs
+
+        def execute(self, arguments: dict) -> ToolResult:
+            args = _SummarizeFilesArgs.model_validate(arguments)
+            return ToolResult(
+                success=True,
+                content="summarized",
+                metadata={"paths": args.paths, "file_count": len(args.paths)},
+            )
+
+    class _ReadFileArgs(BaseModel):
+        path: str
+
+    class _ReadFileTool(BaseTool):
+        name = "read_file"
+        description = "Read a file."
+        args_model = _ReadFileArgs
+
+        def execute(self, arguments: dict) -> ToolResult:
+            args = _ReadFileArgs.model_validate(arguments)
+            return ToolResult(success=True, content=f"1 | file:{args.path}", metadata={"path": args.path})
+
+    registry = ToolRegistry([_SummarizeFilesTool(), _ReadFileTool()])
+
+    response, executed_tools = client.run_tool_calling_loop(
+        system_prompt="test",
+        user_content="inspect files",
+        tool_registry=registry,
+        max_tool_calls=4,
+        max_files=2,
+    )
+
+    assert response.content == "{\"answer\":\"budget limited\"}"
+    assert len(executed_tools) == 1
+    assert executed_tools[0]["name"] == "summarize_files"
+    assert backend.calls[1]["tool_choice"] == "none"
+    assert "文件访问预算已耗尽" in backend.calls[1]["messages"][-1]["content"]
+
+
+def test_llm_client_recovers_when_model_requests_tools_after_budget_exhaustion() -> None:
     backend = _FakeBackend(
         responses=[
             {
@@ -492,19 +589,22 @@ def test_llm_client_rejects_tool_calls_after_budget_exhaustion() -> None:
                     }
                 ]
             },
+            {"content": "{\"answer\":\"budget limited\"}", "tool_calls": []},
         ]
     )
     client = LLMClient(model="qwen-plus", api_key="sk-test", backend=backend)
     registry = ToolRegistry([_EchoTool()])
 
-    with pytest.raises(RuntimeError, match="tool_choice='none'"):
-        client.run_tool_calling_loop(
-            system_prompt="test",
-            user_content="say hi",
-            tool_registry=registry,
-            max_tool_calls=1,
-        )
+    response, executed_tools = client.run_tool_calling_loop(
+        system_prompt="test",
+        user_content="say hi",
+        tool_registry=registry,
+        max_tool_calls=1,
+    )
 
-    assert len(backend.calls) == 2
+    assert response.content == "{\"answer\":\"budget limited\"}"
+    assert len(executed_tools) == 1
+    assert len(backend.calls) == 3
     assert backend.calls[1]["tool_choice"] == "none"
-
+    assert backend.calls[2]["tool_choice"] == "none"
+    assert "仍然请求了工具" in backend.calls[2]["messages"][-1]["content"]

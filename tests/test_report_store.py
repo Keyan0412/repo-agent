@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from repo_agent.cache import ReportStore
-from repo_agent.investigation import InvestigationReport, Observation, SubInvestigationReport
+from repo_agent.investigation import InvestigationReport, Observation
 
 
 def test_report_store_saves_markdown_and_loads_recent(tmp_path: Path) -> None:
@@ -23,16 +23,6 @@ def test_report_store_saves_markdown_and_loads_recent(tmp_path: Path) -> None:
         ],
         files_checked=["app.py"],
         remaining_questions=["Need to inspect retries"],
-        subreports=[
-            SubInvestigationReport(
-                id="SR1",
-                parent_task_id="T1",
-                subtask_id="S1",
-                question="What is planner flow?",
-                answer="It loops once.",
-                confidence="medium",
-            )
-        ],
     )
 
     path = store.save(report, slug="architecture")

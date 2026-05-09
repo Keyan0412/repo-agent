@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from repo_agent.llm.debug import LLMCallDebugRecorder
 from repo_agent.llm.schemas import LLMResponse
@@ -56,24 +56,31 @@ class LLMClient:
         *,
         model: str | None = None,
         env_path: str | Path = ".env",
+        api_key_env: str = "DASHSCOPE_API_KEY",
+        base_url: str | None = None,
+        enable_thinking: bool | None = None,
         timeout: float = 60.0,
         debug_recorder: LLMCallDebugRecorder | None = None,
     ) -> "LLMClient":
         cls._load_env_file(Path(env_path))
 
-        api_key = os.getenv("DASHSCOPE_API_KEY")
+        api_key = os.getenv(api_key_env)
         if not api_key:
-            raise ValueError("DASHSCOPE_API_KEY is not set")
+            raise ValueError(f"{api_key_env} is not set")
 
         resolved_model = model or os.getenv("REPO_AGENT_MODEL") or DEFAULT_MODEL
-        base_url = os.getenv("DASHSCOPE_BASE_URL") or DEFAULT_DASHSCOPE_BASE_URL
-        enable_thinking = cls._parse_bool_env(os.getenv("REPO_AGENT_ENABLE_THINKING"), default=False)
+        resolved_base_url = base_url or os.getenv("DASHSCOPE_BASE_URL") or DEFAULT_DASHSCOPE_BASE_URL
+        resolved_enable_thinking = (
+            enable_thinking
+            if enable_thinking is not None
+            else cls._parse_bool_env(os.getenv("REPO_AGENT_ENABLE_THINKING"), default=False)
+        )
         return cls(
             model=resolved_model,
             api_key=api_key,
-            base_url=base_url,
+            base_url=resolved_base_url,
             timeout=timeout,
-            enable_thinking=enable_thinking,
+            enable_thinking=resolved_enable_thinking,
             debug_recorder=debug_recorder,
         )
 
@@ -83,6 +90,9 @@ class LLMClient:
         *,
         model: str | None = None,
         env_path: str | Path = ".env",
+        api_key_env: str = "DASHSCOPE_API_KEY",
+        base_url: str | None = None,
+        enable_thinking: bool | None = None,
         timeout: float = 60.0,
         debug_recorder: LLMCallDebugRecorder | None = None,
     ) -> "LLMClient":
@@ -96,6 +106,9 @@ class LLMClient:
         return cls.from_env(
             model=resolved_model,
             env_path=env_path,
+            api_key_env=api_key_env,
+            base_url=base_url,
+            enable_thinking=enable_thinking,
             timeout=timeout,
             debug_recorder=debug_recorder,
         )
@@ -106,6 +119,9 @@ class LLMClient:
         *,
         model: str | None = None,
         env_path: str | Path = ".env",
+        api_key_env: str = "DASHSCOPE_API_KEY",
+        base_url: str | None = None,
+        enable_thinking: bool | None = None,
         timeout: float = 60.0,
         debug_recorder: LLMCallDebugRecorder | None = None,
     ) -> "LLMClient":
@@ -119,6 +135,9 @@ class LLMClient:
         return cls.from_env(
             model=resolved_model,
             env_path=env_path,
+            api_key_env=api_key_env,
+            base_url=base_url,
+            enable_thinking=enable_thinking,
             timeout=timeout,
             debug_recorder=debug_recorder,
         )
@@ -198,6 +217,7 @@ class LLMClient:
         max_tool_calls: int,
         max_files: int | None = None,
         temperature: float | None = 0,
+        on_tool_result: Callable[[dict[str, Any]], None] | None = None,
     ) -> tuple[LLMResponse, list[dict[str, Any]]]:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
@@ -209,6 +229,7 @@ class LLMClient:
         files_read = 0
         disabled_tool_names: set[str] = set()
         budget_exhausted_reason: str | None = None
+        post_budget_tool_call_retries = 0
 
         while True:
             tools_allowed = budget_exhausted_reason is None
@@ -220,7 +241,34 @@ class LLMClient:
                 temperature=temperature,
             )
             if not tools_allowed and response.tool_calls:
-                raise RuntimeError("LLM returned tool calls after tool_choice='none' was set")
+                post_budget_tool_call_retries += 1
+                if post_budget_tool_call_retries > 3:
+                    return LLMResponse(
+                        content=budget_exhausted_reason
+                        or "预算已耗尽。请基于已收集的证据生成当前最佳最终回答。",
+                        tool_calls=[],
+                        usage=response.usage,
+                        raw=response.raw,
+                    ), executed_tools
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": response.content or "",
+                        "tool_calls": response.tool_calls,
+                    }
+                )
+                retry_reason = (
+                    f"{budget_exhausted_reason or '预算已耗尽。'}"
+                    "你刚才仍然请求了工具，但工具预算已经耗尽，这些工具不会被执行。"
+                    "现在必须直接返回最终答案，不要再调用任何工具。"
+                )
+                self._append_budget_exhausted_messages(
+                    messages=messages,
+                    tool_calls=response.tool_calls,
+                    reason=retry_reason,
+                )
+                messages.append({"role": "user", "content": retry_reason})
+                continue
             if not response.tool_calls:
                 return response, executed_tools
 
@@ -280,11 +328,14 @@ class LLMClient:
                     )
                     continue
 
-                if name == "read_file" and max_files is not None:
-                    if files_read >= max_files:
+                file_access_cost = self._file_access_cost(name=name, arguments=arguments)
+                if file_access_cost and max_files is not None:
+                    if files_read + file_access_cost > max_files:
                         budget_exhausted_reason: str = (
-                            f"文件读取预算已耗尽。你已经读取了 {max_files} 个文件。"
-                            "不要再请求 read_file。请基于已收集的证据生成当前最佳最终回答。"
+                            f"文件访问预算已耗尽。你最多可以读取或总结 {max_files} 个文件，"
+                            f"当前请求会超过预算。"
+                            "不要再请求 read_file、summarize_file 或 summarize_files。"
+                            "请基于已收集的证据生成当前最佳最终回答。"
                             "需要明确说明由预算限制造成的信息缺口。"
                         )
                         self._append_budget_exhausted_messages(
@@ -294,7 +345,7 @@ class LLMClient:
                             blocked_tool_call_id=tool_call["id"],
                         )
                         break
-                    files_read += 1
+                    files_read += file_access_cost
 
                 result = tool_registry.execute(name, arguments)
                 executed_tools.append(
@@ -305,6 +356,8 @@ class LLMClient:
                         "result": result,
                     }
                 )
+                if on_tool_result is not None:
+                    on_tool_result(executed_tools[-1])
                 messages.append(
                     {
                         "role": "tool",
@@ -327,10 +380,11 @@ class LLMClient:
                     )
                     messages.append({"role": "user", "content": budget_exhausted_reason})
                     break
-                if name == "read_file" and max_files is not None and files_read >= max_files:
+                if file_access_cost and max_files is not None and files_read >= max_files:
                     budget_exhausted_reason = (
-                        f"文件读取预算已耗尽。你已经读取了 {max_files} 个文件。"
-                        "不要再请求 read_file。请基于已收集的证据生成当前最佳最终回答。"
+                        f"文件访问预算已耗尽。你已经读取或总结了 {max_files} 个文件。"
+                        "不要再请求 read_file、summarize_file 或 summarize_files。"
+                        "请基于已收集的证据生成当前最佳最终回答。"
                         "需要明确说明由预算限制造成的信息缺口。"
                     )
                     self._append_budget_exhausted_messages(
@@ -462,3 +516,14 @@ class LLMClient:
             for tool in tools
             if tool.get("function", {}).get("name") not in disabled_tool_names
         ]
+
+    @staticmethod
+    def _file_access_cost(*, name: str, arguments: dict[str, Any]) -> int:
+        if name in {"read_file", "summarize_file"}:
+            return 1
+        if name == "summarize_files":
+            paths = arguments.get("paths")
+            if isinstance(paths, list):
+                return len({str(path) for path in paths if str(path)})
+            return 1
+        return 0

@@ -22,6 +22,8 @@ class MainAgent:
         *,
         prompt_path: Path | None = None,
         max_rounds: int | None = None,
+        max_investigator_tool_calls: int = 30,
+        max_investigator_file_reads: int = 15,
         report_store: ReportStore | None = None,
         event_sink: EventSink | None = None,
     ) -> None:
@@ -29,6 +31,8 @@ class MainAgent:
         self.session = session
         self.investigator = investigator
         self.max_rounds = max_rounds
+        self.max_investigator_tool_calls = max_investigator_tool_calls
+        self.max_investigator_file_reads = max_investigator_file_reads
         self.report_store = report_store
         self.event_sink = event_sink or NullEventSink()
         prompts_dir = Path(__file__).resolve().parent.parent / "prompts"
@@ -40,6 +44,8 @@ class MainAgent:
             investigation_provider=self.investigator,
             user_query=user_query,
             report_store=self.report_store,
+            default_max_tool_calls=self.max_investigator_tool_calls,
+            default_max_file_reads=self.max_investigator_file_reads,
         )
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._system_prompt()},
@@ -92,6 +98,13 @@ class MainAgent:
                 result = tool_registry.execute(name, arguments)
                 content = result.content
             except Exception as exc:
+                self.event_sink.emit(
+                    "main.tool_error",
+                    {
+                        "name": name,
+                        "error": str(exc),
+                    },
+                )
                 content = f"Tool `{name}` failed: {exc}"
 
             messages.append(

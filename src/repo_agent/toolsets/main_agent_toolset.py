@@ -21,6 +21,8 @@ def build_main_agent_tool_registry(
     investigation_provider: InvestigationProvider,
     user_query: str,
     report_store: ReportStore | None = None,
+    default_max_tool_calls: int = 30,
+    default_max_file_reads: int = 15,
 ) -> ToolRegistry:
     return ToolRegistry(
         [
@@ -29,6 +31,8 @@ def build_main_agent_tool_registry(
                 investigation_provider=investigation_provider,
                 user_query=user_query,
                 report_store=report_store,
+                default_max_tool_calls=default_max_tool_calls,
+                default_max_file_reads=default_max_file_reads,
             ),
             FinalAnswerTool(session),
         ]

@@ -73,25 +73,4 @@ class ReportStore:
         else:
             lines.append("- 无")
 
-        lines.extend(["", "## 子报告", ""])
-        if report.subreports:
-            for subreport in report.subreports:
-                lines.extend(
-                    [
-                        f"### {subreport.question}",
-                        "",
-                        f"- 回答: {subreport.answer}",
-                        f"- 置信度: {subreport.confidence}",
-                    ]
-                )
-                if subreport.observations:
-                    lines.append("- 观察摘要:")
-                    lines.extend(f"  - {obs.summary}" for obs in subreport.observations)
-                if subreport.unresolved:
-                    lines.append("- 未解决:")
-                    lines.extend(f"  - {item}" for item in subreport.unresolved)
-                lines.append("")
-        else:
-            lines.append("- 无")
-
         return "\n".join(lines)

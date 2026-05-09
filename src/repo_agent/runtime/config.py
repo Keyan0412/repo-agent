@@ -11,8 +11,10 @@ class AgentConfig(BaseModel):
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     enable_thinking: bool = False
     max_main_rounds: int | None = None
-    max_investigator_tool_calls: int = 8
+    max_investigator_tool_calls: int = 30
+    max_investigator_file_reads: int = 15
     max_file_chars: int = 50_000
+    max_direct_file_chars: int = 50_000
     cache_enabled: bool = True
     cache_dir: str = ".cache/repo-agent"
     ignored_dirs: list[str] = Field(

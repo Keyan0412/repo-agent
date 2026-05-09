@@ -8,4 +8,5 @@ class InvestigationTask(BaseModel):
     user_query: str
     task: str
     relevant_evidence_ids: list[int] = Field(default_factory=list)
-    max_tool_calls: int = 6
+    max_tool_calls: int = 30
+    max_file_reads: int = 15

@@ -6,8 +6,9 @@ from typing import Any
 import pytest
 
 from repo_agent.agents.investigator_agent import InvestigatorAgent
-from repo_agent.investigation import SubInvestigationTask
+from repo_agent.investigation import InvestigationTask
 from repo_agent.llm.client import LLMClient
+from repo_agent.tools.base import ToolResult
 from repo_agent.tools.file import ReadFileTool
 from repo_agent.tools.registry import ToolRegistry
 from repo_agent.tools.repo import FindTextTool, ReadRepoTreeTool, TraceSymbolTool
@@ -94,7 +95,7 @@ def _build_tool_registry(repo: Path) -> ToolRegistry:
     )
 
 
-def test_investigate_subtask_uses_multi_round_tool_calling(tmp_path: Path) -> None:
+def test_investigate_uses_multi_round_tool_calling(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "worker.py").write_text(
@@ -147,39 +148,37 @@ def test_investigate_subtask_uses_multi_round_tool_calling(tmp_path: Path) -> No
         tool_registry=_build_tool_registry(repo),
         event_sink=events,
     )
-    subtask = SubInvestigationTask(
-        id="S1",
-        parent_task_id="T1",
-        question="Where is `execute_task` defined and used?",
-        purpose="Locate the local execution flow",
-        expected_evidence=["definition and usage lines for execute_task"],
-        known_information="Known Components: worker module. Search first for execute_task.",
+    task = InvestigationTask(
+        id="T1",
+        user_query="Where is `execute_task` defined and used?",
+        task="Where is `execute_task` defined and used?",
         max_tool_calls=4,
-        max_files=2,
+        max_file_reads=2,
     )
 
-    report = agent.investigate_subtask(subtask)
+    report = agent.investigate(task)
 
-    assert report.answer
-    assert report.confidence == "high"
+    assert report.summary
     assert "worker.py" in report.files_checked
-    assert "execute_task" in report.symbols_checked
     assert report.observations
     assert any(obs.file_path == "worker.py" and obs.start_line == 1 for obs in report.observations)
     assert report.observations[0].excerpt is not None
     assert "1 | def execute_task():" in report.observations[0].excerpt
-    assert report.additional_tool_calls_needed == 0
-    assert report.additional_file_reads_needed == 0
     assert backend.calls[1]["messages"][-1]["role"] == "tool"
     assert backend.calls[2]["messages"][-1]["role"] == "tool"
+    system_prompt = backend.calls[0]["messages"][0]["content"]
     first_user_message = backend.calls[0]["messages"][1]["content"]
     assert "Subtask ID:" not in first_user_message
     assert "Parent Task ID:" not in first_user_message
     assert "Search Hints:" not in first_user_message
-    assert "已知信息:\nKnown Components: worker module. Search first for execute_task." in first_user_message
+    assert "已知信息:\n无" in first_user_message
     assert "最终输出契约:" in first_user_message
     assert "`confidence` 必须严格是小写 `high`、`medium` 或 `low`。" in first_user_message
-    assert "evidence span 只能引用已用 `read_file` 检查过的文件。" in first_user_message
+    assert "evidence span 只能引用已用 `read_file`、`summarize_file` 或 `summarize_files` 检查过的文件。" in first_user_message
+    assert "如果只需要理解一个文件，使用 `summarize_file`。" in system_prompt
+    assert "它们分别解决单文件理解和跨文件联合理解的问题" in system_prompt
+    assert "`read_file`、`summarize_file` 和 `summarize_files.paths` 只能使用你已经看见的真实文件路径。" in system_prompt
+    assert "如果你只知道目录存在，但不知道目录下有哪些文件，必须先调用 `read_repo_tree` 展开该目录" in system_prompt
     assert [event for event, _ in events.events] == [
         "investigator.tool_call",
         "investigator.tool_call",
@@ -187,14 +186,121 @@ def test_investigate_subtask_uses_multi_round_tool_calling(tmp_path: Path) -> No
     ]
     assert events.events[0][1]["name"] == "trace_symbol"
     assert events.events[0][1]["arguments"]["symbol_name"] == "execute_task"
+    assert events.events[0][1]["summary"] == "2 occurrences"
+    assert events.events[0][1]["metadata"]["match_count"] == 2
+    assert "occurrences" not in events.events[0][1]["metadata"]
     assert events.events[1][1]["name"] == "read_file"
-    assert "worker.py" in events.events[1][1]["result"]
-    assert events.events[2][1]["id"] == "S1-report"
+    assert events.events[1][1]["summary"] == "read worker.py"
+    assert events.events[1][1]["metadata"]["path"] == "worker.py"
+    assert "numbered_content" not in events.events[1][1]["metadata"]
+    assert "result" not in events.events[1][1]
+    assert events.events[2][1]["id"] == "R-T1"
+    assert events.events[2][1]["task_id"] == "T1"
     assert events.events[2][1]["confidence"] == "high"
     assert events.events[2][1]["files_checked"] == ["worker.py"]
 
 
-def test_investigate_subtask_forces_output_when_file_budget_is_exhausted(tmp_path: Path) -> None:
+def test_investigator_collects_summary_regions_from_batch_summary(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    llm_client = LLMClient(model="qwen-plus", api_key="test-key", backend=object())
+    agent = InvestigatorAgent(llm_client=llm_client, repo_path=repo, tool_registry=ToolRegistry([]))
+
+    (
+        files_checked,
+        _symbols_checked,
+        _file_contents,
+        summary_regions,
+    ) = agent._collect_execution_artifacts(
+        executed_tools=[
+            {
+                "name": "summarize_files",
+                "arguments": {"paths": ["a.py", "b.py"]},
+                "result": ToolResult(
+                    success=True,
+                    content="summary",
+                    metadata={
+                        "paths": ["a.py", "b.py"],
+                        "summary": {
+                            "files": [
+                                {
+                                    "path": "a.py",
+                                    "role": "entry point",
+                                    "key_points": ["creates the app"],
+                                    "evidence_regions": [
+                                        {
+                                            "start_line": 1,
+                                            "end_line": 10,
+                                            "label": "app factory",
+                                            "summary": "Builds the app.",
+                                        }
+                                    ],
+                                }
+                            ],
+                            "cross_file_findings": [
+                                {
+                                    "summary": "a.py imports b.py",
+                                    "files": ["a.py", "b.py"],
+                                }
+                            ],
+                        },
+                    },
+                ),
+            }
+        ],
+        max_files=5,
+    )
+
+    assert files_checked == ["a.py", "b.py"]
+    assert summary_regions["a.py"][0]["label"] == "app factory"
+
+
+def test_investigator_collects_summary_regions_from_single_file_summary(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    llm_client = LLMClient(model="qwen-plus", api_key="test-key", backend=object())
+    agent = InvestigatorAgent(llm_client=llm_client, repo_path=repo, tool_registry=ToolRegistry([]))
+
+    (
+        files_checked,
+        _symbols_checked,
+        _file_contents,
+        summary_regions,
+    ) = agent._collect_execution_artifacts(
+        executed_tools=[
+            {
+                "name": "summarize_file",
+                "arguments": {"path": "single.py"},
+                "result": ToolResult(
+                    success=True,
+                    content="summary",
+                    metadata={
+                        "path": "single.py",
+                        "summary": {
+                            "path": "single.py",
+                            "role": "single file utility",
+                            "key_points": ["defines one helper"],
+                            "evidence_regions": [
+                                {
+                                    "start_line": 3,
+                                    "end_line": 8,
+                                    "label": "helper",
+                                    "summary": "Defines the helper.",
+                                }
+                            ],
+                        },
+                    },
+                ),
+            }
+        ],
+        max_files=5,
+    )
+
+    assert files_checked == ["single.py"]
+    assert summary_regions["single.py"][0]["label"] == "helper"
+
+
+def test_investigate_forces_output_when_file_budget_is_exhausted(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "a.py").write_text("target = 1\n", encoding="utf-8")
@@ -241,29 +347,24 @@ def test_investigate_subtask_forces_output_when_file_budget_is_exhausted(tmp_pat
     )
     llm_client = LLMClient(model="qwen-plus", api_key="test-key", backend=backend)
     agent = InvestigatorAgent(llm_client=llm_client, repo_path=repo, tool_registry=_build_tool_registry(repo))
-    subtask = SubInvestigationTask(
-        id="S2",
-        parent_task_id="T1",
-        question="Where does target appear?",
-        purpose="Inspect spread",
-        expected_evidence=["target references"],
-        known_information="Search first for target and confirm how many files contain it.",
+    task = InvestigationTask(
+        id="T1",
+        user_query="Where does target appear?",
+        task="Where does target appear?",
         max_tool_calls=4,
-        max_files=1,
+        max_file_reads=1,
     )
 
-    report = agent.investigate_subtask(subtask)
+    report = agent.investigate(task)
 
-    assert "budget was exhausted" in report.answer
-    assert report.additional_tool_calls_needed == 2
-    assert report.additional_file_reads_needed == 2
+    assert "budget was exhausted" in report.summary
     assert report.files_checked == ["a.py"]
     assert backend.calls[1]["tools"]
     assert backend.calls[1]["tool_choice"] == "none"
-    assert "文件读取预算已耗尽" in backend.calls[1]["messages"][-1]["content"]
+    assert "文件访问预算已耗尽" in backend.calls[1]["messages"][-1]["content"]
 
 
-def test_investigate_subtask_raises_on_invalid_payload_field_types(tmp_path: Path) -> None:
+def test_investigate_raises_on_invalid_payload_field_types(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "worker.py").write_text("def execute_task():\n    return 'done'\n", encoding="utf-8")
@@ -291,22 +392,19 @@ def test_investigate_subtask_raises_on_invalid_payload_field_types(tmp_path: Pat
     )
     llm_client = LLMClient(model="qwen-plus", api_key="test-key", backend=backend)
     agent = InvestigatorAgent(llm_client=llm_client, repo_path=repo, tool_registry=_build_tool_registry(repo))
-    subtask = SubInvestigationTask(
-        id="S3",
-        parent_task_id="T1",
-        question="Inspect execute_task",
-        purpose="Check strict payload typing",
-        expected_evidence=["definition lines"],
-        known_information="Search first for execute_task.",
+    task = InvestigationTask(
+        id="T1",
+        user_query="Inspect execute_task",
+        task="Inspect execute_task",
         max_tool_calls=2,
-        max_files=1,
+        max_file_reads=1,
     )
 
     with pytest.raises(RuntimeError, match="invalid field types"):
-        agent.investigate_subtask(subtask)
+        agent.investigate(task)
 
 
-def test_investigate_subtask_repairs_fenced_json_output(tmp_path: Path) -> None:
+def test_investigate_repairs_fenced_json_output(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "worker.py").write_text("def execute_task():\n    return 'done'\n", encoding="utf-8")
@@ -344,21 +442,17 @@ def test_investigate_subtask_repairs_fenced_json_output(tmp_path: Path) -> None:
     )
     llm_client = LLMClient(model="qwen-plus", api_key="test-key", backend=backend)
     agent = InvestigatorAgent(llm_client=llm_client, repo_path=repo, tool_registry=_build_tool_registry(repo))
-    subtask = SubInvestigationTask(
-        id="S5",
-        parent_task_id="T1",
-        question="Inspect execute_task",
-        purpose="Check fenced JSON repair",
-        expected_evidence=["definition lines"],
-        known_information="Read worker.py.",
+    task = InvestigationTask(
+        id="T1",
+        user_query="Inspect execute_task",
+        task="Inspect execute_task",
         max_tool_calls=2,
-        max_files=1,
+        max_file_reads=1,
     )
 
-    report = agent.investigate_subtask(subtask)
+    report = agent.investigate(task)
 
-    assert report.answer == "`execute_task` is implemented in worker.py."
-    assert report.confidence == "high"
+    assert report.summary == "`execute_task` is implemented in worker.py."
     assert report.observations[0].file_path == "worker.py"
     assert len(backend.calls) == 3
     repair_prompt = backend.calls[2]["messages"][0]["content"]
@@ -367,7 +461,7 @@ def test_investigate_subtask_repairs_fenced_json_output(tmp_path: Path) -> None:
     assert "tools" not in backend.calls[2]
 
 
-def test_investigate_subtask_drops_unread_evidence_span_file(tmp_path: Path) -> None:
+def test_investigate_drops_unread_evidence_span_file(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "worker.py").write_text("def execute_task():\n    return 'done'\n", encoding="utf-8")
@@ -396,19 +490,15 @@ def test_investigate_subtask_drops_unread_evidence_span_file(tmp_path: Path) -> 
     )
     llm_client = LLMClient(model="qwen-plus", api_key="test-key", backend=backend)
     agent = InvestigatorAgent(llm_client=llm_client, repo_path=repo, tool_registry=_build_tool_registry(repo))
-    subtask = SubInvestigationTask(
-        id="S4",
-        parent_task_id="T1",
-        question="Inspect execute_task",
-        purpose="Check span validation",
-        expected_evidence=["definition lines"],
-        known_information="Search first for execute_task.",
+    task = InvestigationTask(
+        id="T1",
+        user_query="Inspect execute_task",
+        task="Inspect execute_task",
         max_tool_calls=2,
-        max_files=1,
+        max_file_reads=1,
     )
 
-    report = agent.investigate_subtask(subtask)
+    report = agent.investigate(task)
 
     assert report.observations == []
-    assert report.confidence == "medium"
-    assert "Dropped evidence span for unread file: other.py" in report.unresolved
+    assert "Dropped evidence span for unchecked file: other.py" in report.remaining_questions

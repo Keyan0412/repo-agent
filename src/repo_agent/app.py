@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from repo_agent.agents.file_summary_agent import FileSummaryAgent
 from repo_agent.agents.investigator_agent import InvestigatorAgent
 from repo_agent.agents.main_agent import MainAgent
 from repo_agent.cache import ReportStore
@@ -28,15 +29,23 @@ def build_agent(
 
     complex_client = llm_client or LLMClient.complex_from_env(
         model=cfg.complex_model,
+        api_key_env=cfg.dashscope_api_key_env,
+        base_url=cfg.dashscope_base_url,
+        enable_thinking=cfg.enable_thinking,
         debug_recorder=JsonlLLMCallDebugRecorder.at_repo_cache(repo, cache_dir=cfg.cache_dir),
     )
     simple_client = simple_llm_client or LLMClient.simple_from_env(
         model=cfg.simple_model,
+        api_key_env=cfg.dashscope_api_key_env,
+        base_url=cfg.dashscope_base_url,
+        enable_thinking=cfg.enable_thinking,
         debug_recorder=JsonlLLMCallDebugRecorder.at_repo_cache(repo, cache_dir=cfg.cache_dir),
     )
     investigator_registry = build_investigator_tool_registry(
         repo,
         max_file_chars=cfg.max_file_chars,
+        require_summary_over_chars=cfg.max_direct_file_chars,
+        summary_provider=FileSummaryAgent(simple_client),
         ignored_names=set(cfg.ignored_dirs),
     )
     investigator = InvestigatorAgent(
@@ -50,6 +59,8 @@ def build_agent(
         session=session,
         investigator=investigator,
         max_rounds=cfg.max_main_rounds,
+        max_investigator_tool_calls=cfg.max_investigator_tool_calls,
+        max_investigator_file_reads=cfg.max_investigator_file_reads,
         report_store=report_store if cfg.cache_enabled else None,
         event_sink=event_sink,
     )
