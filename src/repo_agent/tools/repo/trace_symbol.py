@@ -136,8 +136,9 @@ class TraceSymbolTool(BaseTool):
     description = "Trace symbol definitions and usage locations in Python files via AST."
     args_model = TraceSymbolArgs
 
-    def __init__(self, repo_root: str | Path) -> None:
+    def __init__(self, repo_root: str | Path, *, ignored_names: set[str] | None = None) -> None:
         self.repo_root = Path(repo_root).resolve()
+        self.ignored_names = ignored_names or set()
 
     def execute(self, arguments: dict[str, object]) -> ToolResult:
         args = TraceSymbolArgs.model_validate(arguments)
@@ -206,7 +207,11 @@ class TraceSymbolTool(BaseTool):
     def _iter_python_files(self, target: Path) -> list[Path]:
         if target.is_file():
             return [target] if target.suffix == ".py" else []
-        return sorted(path for path in target.rglob("*.py") if path.is_file())
+        return sorted(
+            path
+            for path in target.rglob("*.py")
+            if path.is_file() and not any(part in self.ignored_names for part in path.parts)
+        )
 
     def _resolve_repo_path(self, raw_path: str) -> Path:
         candidate = (self.repo_root / raw_path).resolve()

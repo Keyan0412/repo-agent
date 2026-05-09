@@ -39,16 +39,16 @@ class ReportStore:
     @staticmethod
     def _to_markdown(report: InvestigationReport) -> str:
         lines = [
-            f"# Investigation Report: {report.task_id}",
+            f"# 调查报告: {report.task_id}",
             "",
-            f"- Report ID: {report.id}",
-            f"- Task ID: {report.task_id}",
+            f"- 报告 ID: {report.id}",
+            f"- 任务 ID: {report.task_id}",
             "",
-            "## Summary",
+            "## 摘要",
             "",
             report.summary,
             "",
-            "## Key Observations",
+            "## 关键观察",
             "",
         ]
         if report.observations:
@@ -59,42 +59,39 @@ class ReportStore:
                     location = f"[{observation.file_path}:L{observation.start_line}-L{end_line}] "
                 lines.append(f"- {location}{observation.summary}")
         else:
-            lines.append("- None")
+            lines.append("- 无")
 
-        lines.extend(["", "## Files Checked", ""])
+        lines.extend(["", "## 已检查文件", ""])
         if report.files_checked:
             lines.extend(f"- {path}" for path in report.files_checked)
         else:
-            lines.append("- None")
+            lines.append("- 无")
 
-        lines.extend(["", "## Remaining Questions", ""])
+        lines.extend(["", "## 剩余问题", ""])
         if report.remaining_questions:
             lines.extend(f"- {item}" for item in report.remaining_questions)
         else:
-            lines.append("- None")
+            lines.append("- 无")
 
-        lines.extend(["", "## Subreports", ""])
+        lines.extend(["", "## 子报告", ""])
         if report.subreports:
             for subreport in report.subreports:
                 lines.extend(
                     [
                         f"### {subreport.question}",
                         "",
-                        f"- Answer: {subreport.answer}",
-                        f"- Confidence: {subreport.confidence}",
+                        f"- 回答: {subreport.answer}",
+                        f"- 置信度: {subreport.confidence}",
                     ]
                 )
                 if subreport.observations:
-                    lines.append("- Observation Summary:")
+                    lines.append("- 观察摘要:")
                     lines.extend(f"  - {obs.summary}" for obs in subreport.observations)
                 if subreport.unresolved:
-                    lines.append("- Unresolved:")
+                    lines.append("- 未解决:")
                     lines.extend(f"  - {item}" for item in subreport.unresolved)
                 lines.append("")
         else:
-            lines.append("- None")
+            lines.append("- 无")
 
-        lines.extend(["## Profile Update Summary", ""])
-        lines.append(report.profile_update_summary or "None")
-        lines.append("")
         return "\n".join(lines)

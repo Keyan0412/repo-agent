@@ -18,6 +18,5 @@ class SubInvestigationReport(BaseModel):
     files_checked: list[str] = Field(default_factory=list)
     symbols_checked: list[str] = Field(default_factory=list)
     unresolved: list[str] = Field(default_factory=list)
-    profile_update_suggestion: str | None = None
     additional_tool_calls_needed: int = 0
     additional_file_reads_needed: int = 0

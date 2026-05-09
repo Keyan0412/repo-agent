@@ -40,6 +40,7 @@ class JsonlLLMCallDebugRecorder:
                 "response": {
                     "content": response.content,
                     "tool_calls": response.tool_calls,
+                    "usage": response.usage,
                     "raw": response.raw,
                 },
             }

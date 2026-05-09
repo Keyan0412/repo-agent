@@ -75,6 +75,14 @@ class _FakeFunction:
         self.arguments = payload["arguments"]
 
 
+class _RecordingEventSink:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    def emit(self, event: str, payload: dict[str, Any]) -> None:
+        self.events.append((event, payload))
+
+
 def _build_tool_registry(repo: Path) -> ToolRegistry:
     return ToolRegistry(
         [
@@ -84,43 +92,6 @@ def _build_tool_registry(repo: Path) -> ToolRegistry:
             ReadFileTool(repo),
         ]
     )
-
-
-def test_summarize_repo_returns_profile_text(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / "README.md").write_text(
-        "# Demo Repo\n\nThis repository implements an analyzer-driven code agent.\n",
-        encoding="utf-8",
-    )
-
-    backend = _FakeBackend(
-        [
-            {
-                "tool_calls": [
-                    {
-                        "id": "call_tree",
-                        "function": {
-                            "name": "read_repo_tree",
-                            "arguments": '{"path": ".", "max_depth": 2}',
-                        },
-                    }
-                ]
-            },
-            {
-                "content": "# Repo Profile\n\n## Overall Understanding\nThis looks like a code analysis agent.\n"
-            },
-        ]
-    )
-    llm_client = LLMClient(model="qwen-plus", api_key="test-key", backend=backend)
-    agent = InvestigatorAgent(llm_client=llm_client, repo_path=repo, tool_registry=_build_tool_registry(repo))
-
-    profile = agent.summarize_repo(user_query="What is this repo?", task="Summarize the repository")
-
-    assert "Repo Profile" in profile
-    assert "code analysis agent" in profile
-    assert backend.calls[0]["tools"]
-    assert backend.calls[1]["messages"][-1]["role"] == "tool"
 
 
 def test_investigate_subtask_uses_multi_round_tool_calling(tmp_path: Path) -> None:
@@ -161,7 +132,7 @@ def test_investigate_subtask_uses_multi_round_tool_calling(tmp_path: Path) -> No
             {
                 "content": (
                     '{"answer":"`execute_task` is defined in worker.py and called later in the same file.",'
-                    '"confidence":"high","unresolved":[],"profile_update_suggestion":"worker.py is a useful execution entry point.",'
+                    '"confidence":"high","unresolved":[],'
                     '"evidence_spans":[{"file_path":"worker.py","start_line":1,"end_line":4,"summary":"The file defines execute_task and calls it later."}],'
                     '"additional_tool_calls_needed":0,"additional_file_reads_needed":0}'
                 )
@@ -169,7 +140,13 @@ def test_investigate_subtask_uses_multi_round_tool_calling(tmp_path: Path) -> No
         ]
     )
     llm_client = LLMClient(model="qwen-plus", api_key="test-key", backend=backend)
-    agent = InvestigatorAgent(llm_client=llm_client, repo_path=repo, tool_registry=_build_tool_registry(repo))
+    events = _RecordingEventSink()
+    agent = InvestigatorAgent(
+        llm_client=llm_client,
+        repo_path=repo,
+        tool_registry=_build_tool_registry(repo),
+        event_sink=events,
+    )
     subtask = SubInvestigationTask(
         id="S1",
         parent_task_id="T1",
@@ -191,7 +168,6 @@ def test_investigate_subtask_uses_multi_round_tool_calling(tmp_path: Path) -> No
     assert any(obs.file_path == "worker.py" and obs.start_line == 1 for obs in report.observations)
     assert report.observations[0].excerpt is not None
     assert "1 | def execute_task():" in report.observations[0].excerpt
-    assert report.profile_update_suggestion is not None
     assert report.additional_tool_calls_needed == 0
     assert report.additional_file_reads_needed == 0
     assert backend.calls[1]["messages"][-1]["role"] == "tool"
@@ -199,12 +175,23 @@ def test_investigate_subtask_uses_multi_round_tool_calling(tmp_path: Path) -> No
     first_user_message = backend.calls[0]["messages"][1]["content"]
     assert "Subtask ID:" not in first_user_message
     assert "Parent Task ID:" not in first_user_message
-    assert "Repo Profile:" not in first_user_message
     assert "Search Hints:" not in first_user_message
-    assert "Known Information:\nKnown Components: worker module. Search first for execute_task." in first_user_message
-    assert "Final output contract:" in first_user_message
-    assert "`confidence` must be exactly lowercase `high`, `medium`, or `low`." in first_user_message
-    assert "Evidence spans may only cite files inspected with `ask_file` or `read_file`." in first_user_message
+    assert "已知信息:\nKnown Components: worker module. Search first for execute_task." in first_user_message
+    assert "最终输出契约:" in first_user_message
+    assert "`confidence` 必须严格是小写 `high`、`medium` 或 `low`。" in first_user_message
+    assert "evidence span 只能引用已用 `read_file` 检查过的文件。" in first_user_message
+    assert [event for event, _ in events.events] == [
+        "investigator.tool_call",
+        "investigator.tool_call",
+        "investigator.report",
+    ]
+    assert events.events[0][1]["name"] == "trace_symbol"
+    assert events.events[0][1]["arguments"]["symbol_name"] == "execute_task"
+    assert events.events[1][1]["name"] == "read_file"
+    assert "worker.py" in events.events[1][1]["result"]
+    assert events.events[2][1]["id"] == "S1-report"
+    assert events.events[2][1]["confidence"] == "high"
+    assert events.events[2][1]["files_checked"] == ["worker.py"]
 
 
 def test_investigate_subtask_forces_output_when_file_budget_is_exhausted(tmp_path: Path) -> None:
@@ -245,7 +232,7 @@ def test_investigate_subtask_forces_output_when_file_budget_is_exhausted(tmp_pat
                 "content": (
                     '{"answer":"The current answer is incomplete because the file read budget was exhausted after inspecting a.py.",'
                     '"confidence":"medium","unresolved":["Need to inspect additional files to confirm the full spread"],'
-                    '"profile_update_suggestion":null,'
+                    ''
                     '"evidence_spans":[{"file_path":"a.py","start_line":1,"end_line":1,"summary":"One occurrence in a.py."}],'
                     '"additional_tool_calls_needed":2,"additional_file_reads_needed":2}'
                 )
@@ -273,7 +260,7 @@ def test_investigate_subtask_forces_output_when_file_budget_is_exhausted(tmp_pat
     assert report.files_checked == ["a.py"]
     assert backend.calls[1]["tools"]
     assert backend.calls[1]["tool_choice"] == "none"
-    assert "File read budget exhausted" in backend.calls[1]["messages"][-1]["content"]
+    assert "文件读取预算已耗尽" in backend.calls[1]["messages"][-1]["content"]
 
 
 def test_investigate_subtask_raises_on_invalid_payload_field_types(tmp_path: Path) -> None:
@@ -296,7 +283,7 @@ def test_investigate_subtask_raises_on_invalid_payload_field_types(tmp_path: Pat
             },
             {
                 "content": (
-                    '{"answer":"ok","confidence":"high","unresolved":"should-be-a-list","profile_update_suggestion":null,'
+                    '{"answer":"ok","confidence":"high","unresolved":"should-be-a-list",'
                     '"evidence_spans":[],"additional_tool_calls_needed":0,"additional_file_reads_needed":0}'
                 )
             },
@@ -327,14 +314,14 @@ def test_investigate_subtask_repairs_fenced_json_output(tmp_path: Path) -> None:
     fenced_json = (
         '```json\n'
         '{"answer":"`execute_task` is implemented in worker.py.",'
-        '"confidence":"high","unresolved":[],"profile_update_suggestion":null,'
+        '"confidence":"high","unresolved":[],'
         '"evidence_spans":[{"file_path":"worker.py","start_line":1,"end_line":2,"summary":"execute_task returns done."}],'
         '"additional_tool_calls_needed":0,"additional_file_reads_needed":0}'
         '\n```'
     )
     repaired_json = (
         '{"answer":"`execute_task` is implemented in worker.py.",'
-        '"confidence":"high","unresolved":[],"profile_update_suggestion":null,'
+        '"confidence":"high","unresolved":[],'
         '"evidence_spans":[{"file_path":"worker.py","start_line":1,"end_line":2,"summary":"execute_task returns done."}],'
         '"additional_tool_calls_needed":0,"additional_file_reads_needed":0}'
     )
@@ -376,10 +363,11 @@ def test_investigate_subtask_repairs_fenced_json_output(tmp_path: Path) -> None:
     assert len(backend.calls) == 3
     repair_prompt = backend.calls[2]["messages"][0]["content"]
     assert "JsonRepairAgent" in repair_prompt
-    assert backend.calls[2]["tool_choice"] == "none"
+    assert "tool_choice" not in backend.calls[2]
+    assert "tools" not in backend.calls[2]
 
 
-def test_investigate_subtask_raises_on_unread_evidence_span_file(tmp_path: Path) -> None:
+def test_investigate_subtask_drops_unread_evidence_span_file(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "worker.py").write_text("def execute_task():\n    return 'done'\n", encoding="utf-8")
@@ -399,7 +387,7 @@ def test_investigate_subtask_raises_on_unread_evidence_span_file(tmp_path: Path)
             },
             {
                 "content": (
-                    '{"answer":"ok","confidence":"high","unresolved":[],"profile_update_suggestion":null,'
+                    '{"answer":"ok","confidence":"high","unresolved":[],'
                     '"evidence_spans":[{"file_path":"other.py","start_line":1,"end_line":1,"summary":"Wrong file."}],'
                     '"additional_tool_calls_needed":0,"additional_file_reads_needed":0}'
                 )
@@ -419,5 +407,8 @@ def test_investigate_subtask_raises_on_unread_evidence_span_file(tmp_path: Path)
         max_files=1,
     )
 
-    with pytest.raises(RuntimeError, match="unread file"):
-        agent.investigate_subtask(subtask)
+    report = agent.investigate_subtask(subtask)
+
+    assert report.observations == []
+    assert report.confidence == "medium"
+    assert "Dropped evidence span for unread file: other.py" in report.unresolved

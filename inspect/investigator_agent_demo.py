@@ -14,14 +14,14 @@ from repo_agent.agents.investigator_agent import InvestigatorAgent
 from repo_agent.investigation import SubInvestigationTask
 from repo_agent.llm.client import LLMClient
 from repo_agent.llm.debug import JsonlLLMCallDebugRecorder
-from repo_agent.tools.file import AskFileTool, ReadFileTool
+from repo_agent.tools.file import ReadFileTool
 from repo_agent.tools.registry import ToolRegistry
 from repo_agent.tools.repo import FindTextTool, ReadRepoTreeTool, TraceSymbolTool
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Inspect summarize_repo() and investigate_subtask() outputs.",
+        description="Inspect InvestigatorAgent investigate_subtask() output.",
     )
     parser.add_argument(
         "--repo-root",
@@ -31,72 +31,51 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model",
         default=None,
-        help="Override the model name. Defaults to REPO_AGENT_MODEL or qwen-plus.",
+        help="Override the simple model for InvestigatorAgent.",
     )
 
-    subparsers = parser.add_subparsers(dest="mode", required=True)
-
-    summarize = subparsers.add_parser("summarize", help="Run summarize_repo()")
-    summarize.add_argument(
-        "--user-query",
-        default="这个仓库大概是做什么的？",
-        help="User query passed to summarize_repo().",
-    )
-    summarize.add_argument(
-        "--task",
-        default="生成初始仓库画像",
-        help="Task description passed to summarize_repo().",
-    )
-
-    subtask = subparsers.add_parser("subtask", help="Run investigate_subtask()")
-    subtask.add_argument(
+    parser.add_argument(
         "--question",
         default="`InvestigatorAgent` 如何在预算约束下组织 repo 调查？",
         help="Subtask question.",
     )
-    subtask.add_argument(
+    parser.add_argument(
         "--purpose",
         default="理解 InvestigatorAgent 的调查执行方式",
         help="Why this subtask matters.",
     )
-    subtask.add_argument(
+    parser.add_argument(
         "--expected-evidence",
         nargs="*",
         default=["关键函数调用", "预算控制逻辑", "文件和符号调查路径"],
         help="Expected evidence list.",
     )
-    subtask.add_argument(
+    parser.add_argument(
         "--known-information",
         default=(
             "Known components include InvestigatorAgent, cache storage, and tool-based repository inspection. "
-            "Search first around investigate_subtask, summarize_repo, and run_tool_calling_loop."
+            "Search first around investigate_subtask and run_tool_calling_loop."
         ),
         help="Optional concise known information passed to investigate_subtask().",
     )
-    subtask.add_argument(
+    parser.add_argument(
         "--max-tool-calls",
         type=int,
         default=15,
         help="Max tool calls for the subtask.",
     )
-    subtask.add_argument(
+    parser.add_argument(
         "--max-files",
         type=int,
         default=10,
         help="Max files to read for the subtask.",
-    )
-    subtask.add_argument(
-        "--max-ask-file-calls",
-        type=int,
-        default=30,
-        help="Max ask_file calls for the subtask.",
     )
 
     return parser
 
 
 def build_investigator(repo_root: Path, model: str | None) -> InvestigatorAgent:
-    llm_client = LLMClient.from_env(
+    llm_client = LLMClient.simple_from_env(
         model=model,
         env_path=ROOT / ".env",
         debug_recorder=JsonlLLMCallDebugRecorder.at_repo_cache(repo_root),
@@ -106,7 +85,6 @@ def build_investigator(repo_root: Path, model: str | None) -> InvestigatorAgent:
             ReadRepoTreeTool(repo_root),
             FindTextTool(repo_root),
             TraceSymbolTool(repo_root),
-            AskFileTool(repo_root, llm_client),
             ReadFileTool(repo_root),
         ]
     )
@@ -128,17 +106,6 @@ def main() -> int:
         return 1
 
     try:
-        if args.mode == "summarize":
-            profile = investigator.summarize_repo(
-                user_query=args.user_query,
-                task=args.task,
-                max_ask_file_calls=40,
-            )
-            print("mode: summarize")
-            print("profile:")
-            print(profile)
-            return 0
-
         subtask = SubInvestigationTask(
             id="INSPECT-S1",
             parent_task_id="INSPECT-T1",
@@ -148,10 +115,9 @@ def main() -> int:
             known_information=args.known_information,
             max_tool_calls=args.max_tool_calls,
             max_files=args.max_files,
-            max_ask_file_calls=args.max_ask_file_calls,
         )
         report = investigator.investigate_subtask(subtask=subtask)
-        print("mode: subtask")
+        print("mode: investigator")
         print("report:")
         print(json.dumps(report.model_dump(), ensure_ascii=False, indent=2))
         return 0

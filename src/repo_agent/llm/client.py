@@ -19,6 +19,8 @@ except ImportError as exc:
 
 DEFAULT_DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_MODEL = "qwen-plus"
+DEFAULT_COMPLEX_MODEL = DEFAULT_MODEL
+DEFAULT_SIMPLE_MODEL = "qwen-turbo"
 
 
 class LLMClient:
@@ -75,6 +77,52 @@ class LLMClient:
             debug_recorder=debug_recorder,
         )
 
+    @classmethod
+    def complex_from_env(
+        cls,
+        *,
+        model: str | None = None,
+        env_path: str | Path = ".env",
+        timeout: float = 60.0,
+        debug_recorder: LLMCallDebugRecorder | None = None,
+    ) -> "LLMClient":
+        cls._load_env_file(Path(env_path))
+        resolved_model = (
+            model
+            or os.getenv("REPO_AGENT_COMPLEX_MODEL")
+            or os.getenv("REPO_AGENT_MODEL")
+            or DEFAULT_COMPLEX_MODEL
+        )
+        return cls.from_env(
+            model=resolved_model,
+            env_path=env_path,
+            timeout=timeout,
+            debug_recorder=debug_recorder,
+        )
+
+    @classmethod
+    def simple_from_env(
+        cls,
+        *,
+        model: str | None = None,
+        env_path: str | Path = ".env",
+        timeout: float = 60.0,
+        debug_recorder: LLMCallDebugRecorder | None = None,
+    ) -> "LLMClient":
+        cls._load_env_file(Path(env_path))
+        resolved_model = (
+            model
+            or os.getenv("REPO_AGENT_SIMPLE_MODEL")
+            or os.getenv("REPO_AGENT_MODEL")
+            or DEFAULT_SIMPLE_MODEL
+        )
+        return cls.from_env(
+            model=resolved_model,
+            env_path=env_path,
+            timeout=timeout,
+            debug_recorder=debug_recorder,
+        )
+
     def chat(
         self,
         messages: list[dict[str, Any]],
@@ -89,9 +137,10 @@ class LLMClient:
             "model": self.model,
             "messages": messages,
         }
-        if tools is not None:
+        tools_supplied = bool(tools)
+        if tools_supplied:
             payload["tools"] = tools
-        if tool_choice is not None:
+        if tool_choice is not None and tools_supplied:
             payload["tool_choice"] = tool_choice
         if temperature is not None:
             payload["temperature"] = temperature
@@ -125,7 +174,12 @@ class LLMClient:
                 )
 
             raw = completion.model_dump() if hasattr(completion, "model_dump") else json.loads(completion.json())
-            response = LLMResponse(content=message.content or "", tool_calls=tool_calls, raw=raw)
+            response = LLMResponse(
+                content=message.content or "",
+                tool_calls=tool_calls,
+                usage=self._extract_usage(completion=completion, raw=raw),
+                raw=raw,
+            )
         except Exception as unknown_exc:
             if self.debug_recorder is not None:
                 self.debug_recorder.record_error(model=self.model, payload=payload, error=unknown_exc)
@@ -143,7 +197,6 @@ class LLMClient:
         tool_registry: ToolRegistry,
         max_tool_calls: int,
         max_files: int | None = None,
-        max_ask_file_calls: int | None = None,
         temperature: float | None = 0,
     ) -> tuple[LLMResponse, list[dict[str, Any]]]:
         messages: list[dict[str, Any]] = [
@@ -154,10 +207,7 @@ class LLMClient:
         executed_tools: list[dict[str, Any]] = []
         remaining_calls = max_tool_calls
         files_read = 0
-        ask_file_calls = 0
         disabled_tool_names: set[str] = set()
-        if max_ask_file_calls is not None and max_ask_file_calls <= 0:
-            disabled_tool_names.add("ask_file")
         budget_exhausted_reason: str | None = None
 
         while True:
@@ -184,9 +234,9 @@ class LLMClient:
 
             if remaining_calls <= 0:
                 budget_exhausted_reason: str = (
-                    f"Tool call budget exhausted. You have already used {max_tool_calls} tool calls. "
-                    "Do not request more tools. Produce your best final answer from the evidence already collected. "
-                    "Explicitly note any information gaps caused by the limited budget."
+                    f"工具调用预算已耗尽。你已经使用了 {max_tool_calls} 次工具调用。"
+                    "不要再请求更多工具。请基于已收集的证据生成当前最佳最终回答。"
+                    "需要明确说明由预算限制造成的信息缺口。"
                 )
                 self._append_budget_exhausted_messages(
                     messages=messages,
@@ -198,9 +248,9 @@ class LLMClient:
             for index, tool_call in enumerate(response.tool_calls):
                 if remaining_calls <= 0:
                     budget_exhausted_reason: str = (
-                        f"Tool call budget exhausted. You have already used {max_tool_calls} tool calls. "
-                        "Do not request more tools. Produce your best final answer from the evidence already collected. "
-                        "Explicitly note any information gaps caused by the limited budget."
+                        f"工具调用预算已耗尽。你已经使用了 {max_tool_calls} 次工具调用。"
+                        "不要再请求更多工具。请基于已收集的证据生成当前最佳最终回答。"
+                        "需要明确说明由预算限制造成的信息缺口。"
                     )
                     self._append_budget_exhausted_messages(
                         messages=messages,
@@ -225,34 +275,17 @@ class LLMClient:
                             "role": "tool",
                             "tool_call_id": tool_call["id"],
                             "name": name,
-                            "content": f"`{name}` is disabled because its budget has been exhausted. Use another available tool or answer from existing evidence.",
+                            "content": f"`{name}` 已禁用，因为它的预算已经耗尽。请使用其它可用工具，或基于已有证据回答。",
                         }
                     )
                     continue
 
-                if name == "ask_file" and max_ask_file_calls is not None:
-                    if ask_file_calls >= max_ask_file_calls:
-                        disabled_tool_names.add("ask_file")
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tool_call["id"],
-                                "name": name,
-                                "content": (
-                                    f"ask_file budget exhausted. You have already used {max_ask_file_calls} ask_file calls. "
-                                    "Do not request more ask_file calls. Use find_text, trace_symbol, read_file, or answer from existing evidence."
-                                ),
-                            }
-                        )
-                        continue
-                    ask_file_calls += 1
-
                 if name == "read_file" and max_files is not None:
                     if files_read >= max_files:
                         budget_exhausted_reason: str = (
-                            f"File read budget exhausted. You have already read {max_files} files. "
-                            "Do not request more read_file calls. Produce your best final answer from the evidence already collected. "
-                            "Explicitly note any information gaps caused by the limited budget."
+                            f"文件读取预算已耗尽。你已经读取了 {max_files} 个文件。"
+                            "不要再请求 read_file。请基于已收集的证据生成当前最佳最终回答。"
+                            "需要明确说明由预算限制造成的信息缺口。"
                         )
                         self._append_budget_exhausted_messages(
                             messages=messages,
@@ -281,22 +314,11 @@ class LLMClient:
                     }
                 )
                 remaining_calls -= 1
-                if name == "ask_file" and max_ask_file_calls is not None and ask_file_calls >= max_ask_file_calls:
-                    disabled_tool_names.add("ask_file")
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                f"ask_file budget exhausted. You have already used {max_ask_file_calls} ask_file calls. "
-                                "Do not request more ask_file calls. Other available tools may still be used if needed."
-                            ),
-                        }
-                    )
                 if remaining_calls <= 0:
                     budget_exhausted_reason = (
-                        f"Tool call budget exhausted. You have already used {max_tool_calls} tool calls. "
-                        "Do not request more tools. Produce your best final answer from the evidence already collected. "
-                        "Explicitly note any information gaps caused by the limited budget."
+                        f"工具调用预算已耗尽。你已经使用了 {max_tool_calls} 次工具调用。"
+                        "不要再请求更多工具。请基于已收集的证据生成当前最佳最终回答。"
+                        "需要明确说明由预算限制造成的信息缺口。"
                     )
                     self._append_budget_exhausted_messages(
                         messages=messages,
@@ -307,9 +329,9 @@ class LLMClient:
                     break
                 if name == "read_file" and max_files is not None and files_read >= max_files:
                     budget_exhausted_reason = (
-                        f"File read budget exhausted. You have already read {max_files} files. "
-                        "Do not request more read_file calls. Produce your best final answer from the evidence already collected. "
-                        "Explicitly note any information gaps caused by the limited budget."
+                        f"文件读取预算已耗尽。你已经读取了 {max_files} 个文件。"
+                        "不要再请求 read_file。请基于已收集的证据生成当前最佳最终回答。"
+                        "需要明确说明由预算限制造成的信息缺口。"
                     )
                     self._append_budget_exhausted_messages(
                         messages=messages,
@@ -384,6 +406,30 @@ class LLMClient:
         return default
 
     @staticmethod
+    def _extract_usage(*, completion: Any, raw: dict[str, Any]) -> dict[str, int]:
+        usage = raw.get("usage")
+        if usage is None:
+            usage = getattr(completion, "usage", None)
+            if hasattr(usage, "model_dump"):
+                usage = usage.model_dump()
+            elif usage is not None and not isinstance(usage, dict):
+                usage = getattr(usage, "__dict__", None)
+        if not isinstance(usage, dict):
+            return {}
+
+        prompt_tokens = usage.get("prompt_tokens", usage.get("input_tokens"))
+        completion_tokens = usage.get("completion_tokens", usage.get("output_tokens"))
+        total_tokens = usage.get("total_tokens")
+        normalized: dict[str, int] = {}
+        if isinstance(prompt_tokens, int):
+            normalized["prompt_tokens"] = prompt_tokens
+        if isinstance(completion_tokens, int):
+            normalized["completion_tokens"] = completion_tokens
+        if isinstance(total_tokens, int):
+            normalized["total_tokens"] = total_tokens
+        return normalized
+
+    @staticmethod
     def _append_budget_exhausted_messages(
         *,
         messages: list[dict[str, Any]],
@@ -394,7 +440,7 @@ class LLMClient:
         for tool_call in tool_calls:
             content = reason
             if blocked_tool_call_id is not None and tool_call["id"] != blocked_tool_call_id:
-                content = "Not executed because the current turn was stopped after budget exhaustion."
+                content = "未执行，因为当前轮次在预算耗尽后已停止。"
             messages.append(
                 {
                     "role": "tool",

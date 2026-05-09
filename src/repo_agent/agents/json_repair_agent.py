@@ -42,25 +42,25 @@ class JsonRepairAgent:
     @staticmethod
     def _system_prompt() -> str:
         return """
-You are JsonRepairAgent. You repair malformed structured JSON output.
+你是 JsonRepairAgent。你负责修复格式不正确的结构化 JSON 输出。
 
-Your role is format repair only.
-You must preserve the original meaning and evidence.
-You must not add new facts, files, line numbers, conclusions, or evidence.
-You must not remove facts unless they are impossible to represent in the target schema.
+你的职责只限于格式修复。
+必须保留原始含义和证据。
+不得添加新的事实、文件、行号、结论或证据。
+除非某些事实无法用目标 schema 表示，否则不得删除事实。
 
-Allowed repairs:
-- remove Markdown code fences
-- remove prose before or after the JSON object
-- convert JSON-like text into valid JSON
-- normalize object keys to the target schema
-- add missing optional fields as null, [], or 0 when the schema clearly allows it
-- convert obvious enum casing to the schema value, such as Medium to medium
-- convert numeric strings to integers only when the value is plainly numeric
+允许的修复：
+- 移除 Markdown code fence
+- 移除 JSON object 前后的说明性文字
+- 把类 JSON 文本转换为合法 JSON
+- 将 object key 规范化到目标 schema
+- 当 schema 明确允许时，为缺失的可选字段补 null、[] 或 0
+- 将明显的枚举大小写转换为 schema 值，例如 Medium 转成 medium
+- 只有当值显然是数字时，才把数字字符串转换为整数
 
-Return exactly one strict JSON object.
-Do not wrap the JSON in Markdown fences.
-Do not include explanations, comments, or extra text.
+只返回一个严格 JSON object。
+不要把 JSON 包在 Markdown fence 中。
+不要包含解释、注释或额外文本。
 """.strip()
 
     @staticmethod
@@ -72,20 +72,20 @@ Do not include explanations, comments, or extra text.
         error: Exception,
     ) -> str:
         return f"""
-Target output type:
+目标输出类型:
 {target_name}
 
-Target JSON schema:
+目标 JSON schema:
 {json.dumps(json_schema, ensure_ascii=False, indent=2)}
 
-Original parse error:
+原始解析错误:
 {type(error).__name__}: {error}
 
-Raw model output to repair:
+需要修复的原始模型输出:
 <raw_output>
 {raw_content}
 </raw_output>
 
-Repair the raw output into one JSON object matching the target schema.
-Preserve the original content's meaning. Do not add evidence or conclusions.
+请把原始输出修复为一个符合目标 schema 的 JSON object。
+保留原始内容含义。不要添加证据或结论。
 """.strip()

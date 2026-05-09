@@ -5,17 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "repo-agent"
 version = "0.1.0"
-description = "EvidenceGraph-driven repo analysis agent"
+description = "Tool-driven repository investigation agent"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115,<1",
     "jinja2>=3.1,<4",
     "openai>=1.0.0,<2",
     "pydantic>=2,<3",
+    "rich>=13.7,<14",
     "uvicorn>=0.30,<1",
 ]
 
 [project.scripts]
+repo-agent = "repo_agent.cli:main"
 repo-agent-viewer = "repo_agent_viewer.app:main"
 
 [tool.setuptools]

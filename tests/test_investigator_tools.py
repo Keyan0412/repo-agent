@@ -60,6 +60,19 @@ def test_find_text_respects_max_results(tmp_path: Path) -> None:
     assert result.content.count("a.py:") == 2
 
 
+def test_find_text_falls_back_to_literal_search_for_invalid_regex(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "a.py").write_text("available tools (request_investigation\n", encoding="utf-8")
+
+    tool = FindTextTool(repo)
+    result = tool.execute({"query": "available tools (request_investigation"})
+
+    assert result.success is True
+    assert "a.py:1: available tools (request_investigation" in result.content
+    assert result.metadata["literal_fallback"] is True
+
+
 def test_repo_tools_do_not_ignore_names_by_default(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

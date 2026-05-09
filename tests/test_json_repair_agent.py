@@ -32,8 +32,8 @@ def test_json_repair_agent_requests_format_only_repair() -> None:
     assert client.calls[0]["temperature"] == 0
     system_prompt = client.calls[0]["messages"][0]["content"]
     user_prompt = client.calls[0]["messages"][1]["content"]
-    assert "format repair only" in system_prompt
-    assert "must not add new facts" in system_prompt
-    assert "Do not wrap the JSON in Markdown fences" in system_prompt
+    assert "职责只限于格式修复" in system_prompt
+    assert "不得添加新的事实" in system_prompt
+    assert "不要把 JSON 包在 Markdown fence 中" in system_prompt
     assert "DemoPayload" in user_prompt
     assert "```json" in user_prompt

@@ -43,7 +43,12 @@ class FindTextTool(BaseTool):
             return ToolResult(success=False, content=f"path does not exist: {args.path}")
 
         flags = 0 if args.case_sensitive else re.IGNORECASE
-        pattern = re.compile(args.query, flags)
+        try:
+            pattern = re.compile(args.query, flags)
+            used_literal_fallback = False
+        except re.error:
+            pattern = re.compile(re.escape(args.query), flags)
+            used_literal_fallback = True
         matches: list[str] = []
 
         for file_path in self._iter_files(target):
@@ -55,16 +60,28 @@ class FindTextTool(BaseTool):
                         return ToolResult(
                             success=True,
                             content="\n".join(matches),
-                            metadata={"truncated": True, "match_count": len(matches)},
+                            metadata={
+                                "truncated": True,
+                                "match_count": len(matches),
+                                "literal_fallback": used_literal_fallback,
+                            },
                         )
 
         if not matches:
-            return ToolResult(success=True, content="No matches found.", metadata={"match_count": 0})
+            return ToolResult(
+                success=True,
+                content="No matches found.",
+                metadata={"match_count": 0, "literal_fallback": used_literal_fallback},
+            )
 
         return ToolResult(
             success=True,
             content="\n".join(matches),
-            metadata={"truncated": False, "match_count": len(matches)},
+            metadata={
+                "truncated": False,
+                "match_count": len(matches),
+                "literal_fallback": used_literal_fallback,
+            },
         )
 
     def _iter_files(self, target: Path) -> list[Path]:

@@ -35,11 +35,12 @@ class _FakeCompletion:
     def __init__(self, payload: dict | None = None) -> None:
         self.choices = [_FakeChoice(payload)]
         self.payload = payload
+        self.usage = (payload or {}).get("usage")
 
     def model_dump(self) -> dict:
         if self.payload is not None:
             tool_calls = self.payload.get("tool_calls")
-            return {
+            dumped = {
                 "choices": [
                     {
                         "message": {
@@ -49,6 +50,9 @@ class _FakeCompletion:
                     }
                 ]
             }
+            if "usage" in self.payload:
+                dumped["usage"] = self.payload["usage"]
+            return dumped
         return {
             "choices": [
                 {
@@ -162,6 +166,27 @@ def test_llm_client_loads_env_file(tmp_path: Path) -> None:
     assert client.enable_thinking is False
 
 
+def test_llm_client_supports_complex_and_simple_env_models(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "DASHSCOPE_API_KEY=sk-test\n"
+        "REPO_AGENT_COMPLEX_MODEL=qwen-max\n"
+        "REPO_AGENT_SIMPLE_MODEL=qwen-turbo\n"
+        "REPO_AGENT_MODEL=qwen-plus\n",
+        encoding="utf-8",
+    )
+    os.environ.pop("DASHSCOPE_API_KEY", None)
+    os.environ.pop("REPO_AGENT_COMPLEX_MODEL", None)
+    os.environ.pop("REPO_AGENT_SIMPLE_MODEL", None)
+    os.environ.pop("REPO_AGENT_MODEL", None)
+
+    complex_client = LLMClient.complex_from_env(env_path=env_file)
+    simple_client = LLMClient.simple_from_env(env_path=env_file)
+
+    assert complex_client.model == "qwen-max"
+    assert simple_client.model == "qwen-turbo"
+
+
 def test_llm_client_chat_maps_content_and_tool_calls() -> None:
     backend = _FakeBackend()
     recorder = _RecordingDebugRecorder()
@@ -187,6 +212,70 @@ def test_llm_client_chat_maps_content_and_tool_calls() -> None:
     assert recorder.entries[0]["status"] == "success"
     assert recorder.entries[0]["payload"]["messages"][0]["content"] == "hello"
     assert recorder.entries[0]["response"].content == "hello"
+
+
+def test_llm_client_chat_extracts_token_usage() -> None:
+    backend = _FakeBackend(
+        responses=[
+            {
+                "content": "done",
+                "tool_calls": [],
+                "usage": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": 5,
+                    "total_tokens": 17,
+                },
+            }
+        ]
+    )
+    client = LLMClient(model="qwen-plus", api_key="sk-test", backend=backend)
+
+    response = client.chat(messages=[{"role": "user", "content": "hello"}])
+
+    assert response.usage == {
+        "prompt_tokens": 12,
+        "completion_tokens": 5,
+        "total_tokens": 17,
+    }
+
+
+def test_llm_client_chat_normalizes_dashscope_usage_names() -> None:
+    backend = _FakeBackend(
+        responses=[
+            {
+                "content": "done",
+                "tool_calls": [],
+                "usage": {
+                    "input_tokens": 20,
+                    "output_tokens": 7,
+                    "total_tokens": 27,
+                },
+            }
+        ]
+    )
+    client = LLMClient(model="qwen-plus", api_key="sk-test", backend=backend)
+
+    response = client.chat(messages=[{"role": "user", "content": "hello"}])
+
+    assert response.usage == {
+        "prompt_tokens": 20,
+        "completion_tokens": 7,
+        "total_tokens": 27,
+    }
+
+
+def test_llm_client_omits_tool_choice_when_no_tools_are_supplied() -> None:
+    backend = _FakeBackend(responses=[{"content": "{}", "tool_calls": []}])
+    client = LLMClient(model="qwen-plus", api_key="sk-test", backend=backend)
+
+    client.chat(
+        messages=[{"role": "user", "content": "strict json"}],
+        tool_choice="none",
+        temperature=0,
+    )
+
+    assert "tools" not in backend.calls[0]
+    assert "tool_choice" not in backend.calls[0]
 
 
 def test_llm_client_chat_records_errors() -> None:
@@ -218,7 +307,19 @@ def test_jsonl_llm_call_debug_recorder_writes_success_and_error_records(tmp_path
         model="qwen-plus",
         api_key="sk-test",
         base_url=DEFAULT_DASHSCOPE_BASE_URL,
-        backend=_FakeBackend(),
+        backend=_FakeBackend(
+            responses=[
+                {
+                    "content": "hello",
+                    "tool_calls": [],
+                    "usage": {
+                        "prompt_tokens": 3,
+                        "completion_tokens": 2,
+                        "total_tokens": 5,
+                    },
+                }
+            ]
+        ),
         debug_recorder=recorder,
     )
 
@@ -244,6 +345,11 @@ def test_jsonl_llm_call_debug_recorder_writes_success_and_error_records(tmp_path
     assert [record["status"] for record in records] == ["success", "error"]
     assert records[0]["request"]["messages"][0]["content"] == "ok"
     assert records[0]["response"]["content"] == "hello"
+    assert records[0]["response"]["usage"] == {
+        "prompt_tokens": 3,
+        "completion_tokens": 2,
+        "total_tokens": 5,
+    }
     assert records[1]["request"]["messages"][0]["content"] == "boom"
     assert records[1]["error"]["message"] == "backend exploded"
 
@@ -362,7 +468,7 @@ def test_llm_client_run_tool_calling_loop_forces_final_answer_after_budget_exhau
     assert executed_tools[0]["arguments"]["path"] == "a.py"
     assert backend.calls[1]["tools"]
     assert backend.calls[1]["tool_choice"] == "none"
-    assert "File read budget exhausted" in backend.calls[1]["messages"][-1]["content"]
+    assert "文件读取预算已耗尽" in backend.calls[1]["messages"][-1]["content"]
 
 
 def test_llm_client_rejects_tool_calls_after_budget_exhaustion() -> None:
@@ -402,64 +508,3 @@ def test_llm_client_rejects_tool_calls_after_budget_exhaustion() -> None:
     assert len(backend.calls) == 2
     assert backend.calls[1]["tool_choice"] == "none"
 
-
-def test_llm_client_removes_ask_file_after_ask_file_budget_is_exhausted() -> None:
-    backend = _FakeBackend(
-        responses=[
-            {
-                "tool_calls": [
-                    {
-                        "id": "call_ask",
-                        "type": "function",
-                        "function": {"name": "ask_file", "arguments": "{\"path\": \"a.py\", \"question\": \"What is implemented?\"}"},
-                    }
-                ]
-            },
-            {"content": "{\"answer\":\"done\"}", "tool_calls": []},
-        ]
-    )
-    client = LLMClient(model="qwen-plus", api_key="sk-test", backend=backend)
-
-    class _AskFileArgs(BaseModel):
-        path: str
-        question: str
-
-    class _AskFileTool(BaseTool):
-        name = "ask_file"
-        description = "Ask one file."
-        args_model = _AskFileArgs
-
-        def execute(self, arguments: dict) -> ToolResult:
-            args = _AskFileArgs.model_validate(arguments)
-            return ToolResult(success=True, content="{}", metadata={"path": args.path})
-
-    class _ReadFileArgs(BaseModel):
-        path: str
-
-    class _ReadFileTool(BaseTool):
-        name = "read_file"
-        description = "Read one file."
-        args_model = _ReadFileArgs
-
-        def execute(self, arguments: dict) -> ToolResult:
-            return ToolResult(success=True, content="")
-
-    registry = ToolRegistry([_AskFileTool(), _ReadFileTool()])
-
-    response, executed_tools = client.run_tool_calling_loop(
-        system_prompt="test",
-        user_content="inspect",
-        tool_registry=registry,
-        max_tool_calls=4,
-        max_ask_file_calls=1,
-    )
-
-    assert response.content == "{\"answer\":\"done\"}"
-    assert executed_tools[0]["name"] == "ask_file"
-    second_call_tool_names = {
-        tool["function"]["name"]
-        for tool in backend.calls[1]["tools"]
-    }
-    assert "ask_file" not in second_call_tool_names
-    assert "read_file" in second_call_tool_names
-    assert "ask_file budget exhausted" in backend.calls[1]["messages"][-1]["content"]

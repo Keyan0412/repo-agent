@@ -33,7 +33,6 @@ def test_report_store_saves_markdown_and_loads_recent(tmp_path: Path) -> None:
                 confidence="medium",
             )
         ],
-        profile_update_summary="Repo profile should mention planner loop.",
     )
 
     path = store.save(report, slug="architecture")
@@ -41,5 +40,6 @@ def test_report_store_saves_markdown_and_loads_recent(tmp_path: Path) -> None:
     assert path.exists() is True
     loaded = store.load_recent(limit=1)
     assert len(loaded) == 1
-    assert "Investigation Report" in loaded[0]
+    assert "调查报告" in loaded[0]
     assert "planner flow" in loaded[0]
+    assert "Profile" not in loaded[0]

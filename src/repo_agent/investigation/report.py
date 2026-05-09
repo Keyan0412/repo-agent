@@ -14,4 +14,3 @@ class InvestigationReport(BaseModel):
     files_checked: list[str] = Field(default_factory=list)
     remaining_questions: list[str] = Field(default_factory=list)
     subreports: list[SubInvestigationReport] = Field(default_factory=list)
-    profile_update_summary: str | None = None
