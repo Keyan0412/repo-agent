@@ -47,7 +47,7 @@ class InvestigatorAgent:
                 f"问题: {task.task}\n"
                 f"目的: 回答用户问题：{task.user_query}\n"
                 "期望证据: 当前源码、符号搜索结果、相关文件内容\n"
-                "已知信息:\n无\n\n"
+                f"已知信息:\n{task.known_information.strip() or '无'}\n\n"
                 "按需使用工具。必须保持在当前调查任务范围内。\n"
                 f"{self._report_output_contract()}"
             ),
@@ -114,8 +114,8 @@ class InvestigatorAgent:
 - `additional_tool_calls_needed` 和 `additional_file_reads_needed` 必须是整数。
 - 每个 evidence span 必须包含 `file_path`、`start_line`、`end_line` 和 `summary`。
 - evidence span 行号必须是正整数，绝不能使用 0。
-- evidence span 只能引用已用 `read_file`、`summarize_file` 或 `summarize_files` 检查过的文件。
-- 不要在 `evidence_spans` 中引用 read_repo_tree、find_text、trace_symbol、目录列表或未检查文件。
+- evidence span 只能引用已用 `read_files` 检查过的文件。
+- 不要在 `evidence_spans` 中引用 list_dir、find_files、find_text、trace_symbol、目录列表或未检查文件。
 - 如果预算耗尽，请适当降低 confidence，在 `unresolved` 中列出缺失检查，并估计额外预算字段。
 """.strip()
 
@@ -164,6 +164,17 @@ class InvestigatorAgent:
                     files_checked.append(path)
                 if path:
                     file_contents[path] = result.content
+            elif tool_name == "read_files":
+                files = metadata.get("files") if isinstance(metadata.get("files"), list) else []
+                for file_metadata in files:
+                    if not isinstance(file_metadata, dict):
+                        continue
+                    path = str(file_metadata.get("path") or "")
+                    if path and path not in files_checked and len(files_checked) < max_files:
+                        files_checked.append(path)
+                    numbered_content = str(file_metadata.get("numbered_content") or "")
+                    if path:
+                        file_contents[path] = numbered_content
             elif tool_name == "summarize_file":
                 path = str(metadata.get("path") or arguments.get("path") or "")
                 if path and path not in files_checked and len(files_checked) < max_files:
@@ -242,16 +253,38 @@ class InvestigatorAgent:
                 "metadata": {},
             }
 
-        if name == "read_repo_tree":
+        if name == "list_dir":
             path = str(metadata.get("path") or arguments.get("path") or ".")
-            max_depth = metadata.get("max_depth", arguments.get("max_depth"))
-            detail = f"depth={max_depth}" if max_depth is not None else "-"
+            entry_count = metadata.get("entry_count", 0)
+            detail_parts = []
+            if metadata.get("recursive"):
+                detail_parts.append("recursive")
+            if metadata.get("truncated"):
+                detail_parts.append("truncated")
             return {
-                "summary": f"listed {path}",
-                "detail": detail,
+                "summary": f"listed {entry_count} entries in {path}",
+                "detail": "  ".join(detail_parts) or "directory listed",
                 "metadata": {
                     "path": path,
-                    "max_depth": max_depth,
+                    "entry_count": entry_count,
+                    "total_entry_count": metadata.get("total_entry_count", entry_count),
+                    "recursive": bool(metadata.get("recursive")),
+                    "truncated": bool(metadata.get("truncated")),
+                },
+            }
+
+        if name == "find_files":
+            match_count = metadata.get("match_count", 0)
+            pattern = str(metadata.get("pattern") or arguments.get("pattern") or "*")
+            return {
+                "summary": f"{match_count} files",
+                "detail": f"pattern={pattern}" if pattern else "file search complete",
+                "metadata": {
+                    "path": metadata.get("path", arguments.get("path", ".")),
+                    "pattern": pattern,
+                    "match_count": match_count,
+                    "total_match_count": metadata.get("total_match_count", match_count),
+                    "truncated": bool(metadata.get("truncated")),
                 },
             }
 
@@ -277,6 +310,24 @@ class InvestigatorAgent:
                     "end_line": end_line,
                     "truncated": bool(metadata.get("truncated")),
                     "max_chars": metadata.get("max_chars"),
+                },
+            }
+
+        if name == "read_files":
+            paths = metadata.get("paths") if isinstance(metadata.get("paths"), list) else []
+            files = metadata.get("files") if isinstance(metadata.get("files"), list) else []
+            truncated_count = sum(
+                1
+                for item in files
+                if isinstance(item, dict) and bool(item.get("truncated"))
+            )
+            return {
+                "summary": f"read {len(paths)} files",
+                "detail": f"{truncated_count} truncated",
+                "metadata": {
+                    "paths": paths,
+                    "file_count": metadata.get("file_count", len(paths)),
+                    "truncated_count": truncated_count,
                 },
             }
 
@@ -315,10 +366,20 @@ class InvestigatorAgent:
 
         if name == "find_text":
             match_count = metadata.get("match_count", 0)
+            page = metadata.get("page", arguments.get("page", 1))
+            detail_parts = [f"page={page}"]
+            if metadata.get("has_next_page"):
+                detail_parts.append(f"next={metadata.get('next_page')}")
+            else:
+                detail_parts.append("all results")
             return {
                 "summary": f"{match_count} matches",
-                "detail": "truncated" if metadata.get("truncated") else "search complete",
+                "detail": "  ".join(detail_parts),
                 "metadata": {
+                    "page": page,
+                    "page_size": metadata.get("page_size"),
+                    "has_next_page": bool(metadata.get("has_next_page")),
+                    "next_page": metadata.get("next_page"),
                     "match_count": match_count,
                     "truncated": bool(metadata.get("truncated")),
                     "literal_fallback": bool(metadata.get("literal_fallback")),

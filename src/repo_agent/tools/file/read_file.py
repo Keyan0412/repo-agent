@@ -13,6 +13,22 @@ class ReadFileArgs(BaseModel):
     end_line: int | None = Field(default=None, ge=1)
 
 
+class ReadFilesItem(BaseModel):
+    path: str
+    start_line: int | None = Field(default=None, ge=1)
+    end_line: int | None = Field(default=None, ge=1)
+
+
+class ReadFilesArgs(BaseModel):
+    files: list[ReadFilesItem] = Field(
+        min_length=1,
+        description=(
+            "Files to read in one batch. Use full-file reads for a small set of key files, "
+            "or provide start_line/end_line for targeted regions."
+        ),
+    )
+
+
 class ReadFileTool(BaseTool):
     name = "read_file"
     description = "Read a single file with line numbers."
@@ -31,7 +47,9 @@ class ReadFileTool(BaseTool):
 
     def execute(self, arguments: dict[str, object]) -> ToolResult:
         args = ReadFileArgs.model_validate(arguments)
+        return self._read_one(args)
 
+    def _read_one(self, args: ReadFileArgs | ReadFilesItem) -> ToolResult:
         # avoid accessing outside repository
         try:
             target = self._resolve_repo_path(args.path)
@@ -128,3 +146,86 @@ class ReadFileTool(BaseTool):
                 "</file_content>",
             ]
         )
+
+
+class ReadFilesTool(BaseTool):
+    name = "read_files"
+    description = "Read one or more files in a single batch with line numbers."
+    args_model = ReadFilesArgs
+
+    def __init__(
+        self,
+        repo_root: str | Path,
+        *,
+        max_chars: int = 50_000,
+        require_summary_over_chars: int | None = None,
+    ) -> None:
+        self.reader = ReadFileTool(
+            repo_root,
+            max_chars=max_chars,
+            require_summary_over_chars=require_summary_over_chars,
+        )
+
+    def execute(self, arguments: dict[str, object]) -> ToolResult:
+        args = ReadFilesArgs.model_validate(arguments)
+        seen: set[str] = set()
+        files: list[ReadFilesItem] = []
+        for item in args.files:
+            if item.path not in seen:
+                files.append(item)
+                seen.add(item.path)
+
+        failures: list[str] = []
+        for item in files:
+            validation = self._validate_readable(item.path)
+            if validation is not None:
+                failures.append(validation)
+        if failures:
+            return ToolResult(
+                success=False,
+                content="read_files failed:\n" + "\n".join(f"- {failure}" for failure in failures),
+                metadata={"paths": [item.path for item in files], "failures": failures},
+            )
+
+        results: list[ToolResult] = []
+        for item in files:
+            result = self.reader._read_one(item)
+            if not result.success:
+                return ToolResult(
+                    success=False,
+                    content=f"read_files failed while reading {item.path}: {result.content}",
+                    metadata={"paths": [entry.path for entry in files], "failed_path": item.path},
+                )
+            results.append(result)
+
+        return ToolResult(
+            success=True,
+            content="\n\n".join(result.content for result in results),
+            metadata={
+                "paths": [str(result.metadata.get("path") or "") for result in results],
+                "file_count": len(results),
+                "files": [
+                    {
+                        "path": result.metadata.get("path"),
+                        "line_count": result.metadata.get("line_count"),
+                        "start_line": result.metadata.get("start_line"),
+                        "end_line": result.metadata.get("end_line"),
+                        "truncated": result.metadata.get("truncated"),
+                        "max_chars": result.metadata.get("max_chars"),
+                        "numbered_content": result.metadata.get("numbered_content"),
+                    }
+                    for result in results
+                ],
+            },
+        )
+
+    def _validate_readable(self, raw_path: str) -> str | None:
+        try:
+            target = self.reader._resolve_repo_path(raw_path)
+        except ValueError as exc:
+            return str(exc)
+        if not target.exists():
+            return f"file does not exist: {raw_path}"
+        if not target.is_file():
+            return f"path is not a file: {raw_path}"
+        return None

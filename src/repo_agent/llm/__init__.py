@@ -1,6 +1,10 @@
 """LLM interfaces."""
 
 from .client import LLMClient
-from .debug import JsonlLLMCallDebugRecorder, LLMCallDebugRecorder
+from .debug import LLMCallDebugRecorder, RunLLMCallDebugRecorder
 
-__all__ = ["JsonlLLMCallDebugRecorder", "LLMCallDebugRecorder", "LLMClient"]
+__all__ = [
+    "LLMCallDebugRecorder",
+    "LLMClient",
+    "RunLLMCallDebugRecorder",
+]

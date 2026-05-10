@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from repo_agent.llm.debug import LLMCallDebugRecorder
 from repo_agent.llm.schemas import LLMResponse
+from repo_agent.runtime.text import strip_surrogates_from_json
 from repo_agent.tools.registry import ToolRegistry
 
 try:
@@ -169,6 +170,7 @@ class LLMClient:
         if extra_body is not None:
             merged_extra_body.update(extra_body)
         payload["extra_body"] = merged_extra_body
+        payload = strip_surrogates_from_json(payload)
 
         try:
             completion = self._backend.chat.completions.create(**payload)
@@ -334,7 +336,7 @@ class LLMClient:
                         budget_exhausted_reason: str = (
                             f"文件访问预算已耗尽。你最多可以读取或总结 {max_files} 个文件，"
                             f"当前请求会超过预算。"
-                            "不要再请求 read_file、summarize_file 或 summarize_files。"
+                            "不要再请求 read_files。"
                             "请基于已收集的证据生成当前最佳最终回答。"
                             "需要明确说明由预算限制造成的信息缺口。"
                         )
@@ -383,7 +385,7 @@ class LLMClient:
                 if file_access_cost and max_files is not None and files_read >= max_files:
                     budget_exhausted_reason = (
                         f"文件访问预算已耗尽。你已经读取或总结了 {max_files} 个文件。"
-                        "不要再请求 read_file、summarize_file 或 summarize_files。"
+                        "不要再请求 read_files。"
                         "请基于已收集的证据生成当前最佳最终回答。"
                         "需要明确说明由预算限制造成的信息缺口。"
                     )
@@ -520,6 +522,16 @@ class LLMClient:
     @staticmethod
     def _file_access_cost(*, name: str, arguments: dict[str, Any]) -> int:
         if name in {"read_file", "summarize_file"}:
+            return 1
+        if name == "read_files":
+            files = arguments.get("files")
+            if isinstance(files, list):
+                paths = [
+                    str(item.get("path") or "")
+                    for item in files
+                    if isinstance(item, dict)
+                ]
+                return len({path for path in paths if path})
             return 1
         if name == "summarize_files":
             paths = arguments.get("paths")

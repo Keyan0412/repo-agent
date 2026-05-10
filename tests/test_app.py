@@ -28,12 +28,11 @@ def test_build_agent_uses_complex_client_for_main_and_simple_client_for_investig
     investigator = agent.investigator
     assert investigator.llm_client is simple_client
     assert set(investigator.tool_registry.tools) == {
-        "read_repo_tree",
+        "list_dir",
+        "find_files",
         "find_text",
         "trace_symbol",
-        "read_file",
-        "summarize_files",
-        "summarize_file",
+        "read_files",
     }
 
 

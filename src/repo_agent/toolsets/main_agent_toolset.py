@@ -21,8 +21,8 @@ def build_main_agent_tool_registry(
     investigation_provider: InvestigationProvider,
     user_query: str,
     report_store: ReportStore | None = None,
-    default_max_tool_calls: int = 30,
-    default_max_file_reads: int = 15,
+    default_max_tool_calls: int = 40,
+    default_max_file_reads: int = 30,
 ) -> ToolRegistry:
     return ToolRegistry(
         [

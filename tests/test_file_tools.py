@@ -2,7 +2,7 @@ from pathlib import Path
 
 from typing import Any
 
-from repo_agent.tools.file import ReadFileTool, SummarizeFileTool, SummarizeFilesTool
+from repo_agent.tools.file import ReadFilesTool, ReadFileTool, SummarizeFileTool, SummarizeFilesTool
 
 
 class _FakeSummaryProvider:
@@ -146,6 +146,46 @@ def test_read_file_requires_summary_when_selected_content_is_too_large(tmp_path:
     assert "Use summarize_file" in result.content
     assert result.metadata["requires_summary"] is True
     assert result.metadata["path"] == "large.txt"
+
+
+def test_read_files_reads_multiple_files_in_one_result(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "a.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
+    (repo / "b.py").write_text("x = 1\ny = 2\nz = 3\n", encoding="utf-8")
+
+    tool = ReadFilesTool(repo)
+    result = tool.execute(
+        {
+            "files": [
+                {"path": "a.py"},
+                {"path": "b.py", "start_line": 2, "end_line": 3},
+            ]
+        }
+    )
+
+    assert result.success is True
+    assert '<file_content path="a.py" trust="untrusted" lines="2">' in result.content
+    assert '<file_content path="b.py" trust="untrusted" lines="3">' in result.content
+    assert "1 | a = 1" in result.content
+    assert "1 | x = 1" not in result.content
+    assert "2 | y = 2\n3 | z = 3" in result.content
+    assert result.metadata["paths"] == ["a.py", "b.py"]
+    assert result.metadata["file_count"] == 2
+    assert result.metadata["files"][1]["start_line"] == 2
+
+
+def test_read_files_fails_batch_when_any_path_is_missing(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "a.py").write_text("a = 1\n", encoding="utf-8")
+
+    tool = ReadFilesTool(repo)
+    result = tool.execute({"files": [{"path": "a.py"}, {"path": "missing.py"}]})
+
+    assert result.success is False
+    assert "file does not exist: missing.py" in result.content
+    assert result.metadata["paths"] == ["a.py", "missing.py"]
 
 
 def test_summarize_file_uses_summary_provider(tmp_path: Path) -> None:

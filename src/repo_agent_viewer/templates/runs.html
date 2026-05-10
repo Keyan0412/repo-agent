@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>repo-agent Runs</title>
+    <style>
+      body { margin: 0; font-family: "Segoe UI", sans-serif; background: #f7f7f4; color: #171717; }
+      main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+      h1 { margin: 0 0 8px; font-size: 24px; }
+      .muted { color: #666; font-size: 14px; }
+      .runs { margin-top: 20px; display: grid; gap: 10px; }
+      .run { display: grid; grid-template-columns: 1fr auto; gap: 16px; padding: 14px 16px; border: 1px solid #d8d8d0; border-radius: 8px; background: #fff; text-decoration: none; color: inherit; }
+      .run:hover { border-color: #28747c; }
+      .query { margin-top: 6px; color: #333; line-height: 1.4; }
+      .stats { text-align: right; color: #555; font-size: 13px; line-height: 1.5; white-space: nowrap; }
+      .badge { display: inline-block; padding: 2px 8px; border: 1px solid currentColor; border-radius: 999px; font-size: 12px; }
+      .success { color: #257047; }
+      .error { color: #a3342d; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>repo-agent Runs</h1>
+      <div class="muted">{{ runs_dir }}</div>
+      <section class="runs">
+        {% for run in runs %}
+          <a class="run" href="/runs/{{ run.run_id }}">
+            <div>
+              <span class="badge {{ 'success' if run.status == 'success' else 'error' }}">{{ run.status }}</span>
+              <strong>{{ run.run_id }}</strong>
+              <div class="query">{{ run.user_query }}</div>
+              <div class="muted">{{ run.started_at }} -> {{ run.ended_at }}</div>
+            </div>
+            <div class="stats">
+              <div>{{ run.total_tokens }} tokens</div>
+              <div>{{ run.investigation_count }} investigations</div>
+              <div>{{ run.issue_count }} issues</div>
+            </div>
+          </a>
+        {% else %}
+          <p>No recorded runs found.</p>
+        {% endfor %}
+      </section>
+    </main>
+  </body>
+</html>

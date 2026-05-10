@@ -9,9 +9,9 @@ from repo_agent.agents.investigator_agent import InvestigatorAgent
 from repo_agent.investigation import InvestigationTask
 from repo_agent.llm.client import LLMClient
 from repo_agent.tools.base import ToolResult
-from repo_agent.tools.file import ReadFileTool
+from repo_agent.tools.file import ReadFilesTool
 from repo_agent.tools.registry import ToolRegistry
-from repo_agent.tools.repo import FindTextTool, ReadRepoTreeTool, TraceSymbolTool
+from repo_agent.tools.repo import FindFilesTool, FindTextTool, ListDirTool, TraceSymbolTool
 
 
 class _FakeBackend:
@@ -87,10 +87,11 @@ class _RecordingEventSink:
 def _build_tool_registry(repo: Path) -> ToolRegistry:
     return ToolRegistry(
         [
-            ReadRepoTreeTool(repo),
+            ListDirTool(repo),
+            FindFilesTool(repo),
             FindTextTool(repo),
             TraceSymbolTool(repo),
-            ReadFileTool(repo),
+            ReadFilesTool(repo),
         ]
     )
 
@@ -124,8 +125,8 @@ def test_investigate_uses_multi_round_tool_calling(tmp_path: Path) -> None:
                     {
                         "id": "call_read",
                         "function": {
-                            "name": "read_file",
-                            "arguments": '{"path": "worker.py"}',
+                            "name": "read_files",
+                            "arguments": '{"files": [{"path": "worker.py"}]}',
                         },
                     }
                 ]
@@ -174,11 +175,12 @@ def test_investigate_uses_multi_round_tool_calling(tmp_path: Path) -> None:
     assert "已知信息:\n无" in first_user_message
     assert "最终输出契约:" in first_user_message
     assert "`confidence` 必须严格是小写 `high`、`medium` 或 `low`。" in first_user_message
-    assert "evidence span 只能引用已用 `read_file`、`summarize_file` 或 `summarize_files` 检查过的文件。" in first_user_message
-    assert "如果只需要理解一个文件，使用 `summarize_file`。" in system_prompt
-    assert "它们分别解决单文件理解和跨文件联合理解的问题" in system_prompt
-    assert "`read_file`、`summarize_file` 和 `summarize_files.paths` 只能使用你已经看见的真实文件路径。" in system_prompt
-    assert "如果你只知道目录存在，但不知道目录下有哪些文件，必须先调用 `read_repo_tree` 展开该目录" in system_prompt
+    assert "evidence span 只能引用已用 `read_files` 检查过的文件。" in first_user_message
+    assert "阶段 1：候选文件辨析" in system_prompt
+    assert "阶段 2：集中精读并回答" in system_prompt
+    assert "如果只需要读一个文件，也必须使用 `read_files`" in system_prompt
+    assert "`read_files.files[].path` 只能使用你已经看见的真实文件路径。" in system_prompt
+    assert "如果你只知道目录存在，但不知道目录下有哪些文件，必须先调用 `list_dir` 列出该目录" in system_prompt
     assert [event for event, _ in events.events] == [
         "investigator.tool_call",
         "investigator.tool_call",
@@ -189,9 +191,9 @@ def test_investigate_uses_multi_round_tool_calling(tmp_path: Path) -> None:
     assert events.events[0][1]["summary"] == "2 occurrences"
     assert events.events[0][1]["metadata"]["match_count"] == 2
     assert "occurrences" not in events.events[0][1]["metadata"]
-    assert events.events[1][1]["name"] == "read_file"
-    assert events.events[1][1]["summary"] == "read worker.py"
-    assert events.events[1][1]["metadata"]["path"] == "worker.py"
+    assert events.events[1][1]["name"] == "read_files"
+    assert events.events[1][1]["summary"] == "read 1 files"
+    assert events.events[1][1]["metadata"]["paths"] == ["worker.py"]
     assert "numbered_content" not in events.events[1][1]["metadata"]
     assert "result" not in events.events[1][1]
     assert events.events[2][1]["id"] == "R-T1"
@@ -315,21 +317,21 @@ def test_investigate_forces_output_when_file_budget_is_exhausted(tmp_path: Path)
                         "id": "call_find",
                         "function": {
                             "name": "find_text",
-                            "arguments": '{"query": "target", "max_results": 8}',
+                            "arguments": '{"query": "target"}',
                         },
                     },
                     {
                         "id": "call_read_a",
                         "function": {
-                            "name": "read_file",
-                            "arguments": '{"path": "a.py"}',
+                            "name": "read_files",
+                            "arguments": '{"files": [{"path": "a.py"}]}',
                         },
                     },
                     {
                         "id": "call_read_b",
                         "function": {
-                            "name": "read_file",
-                            "arguments": '{"path": "b.py"}',
+                            "name": "read_files",
+                            "arguments": '{"files": [{"path": "b.py"}]}',
                         },
                     },
                 ]
@@ -376,8 +378,8 @@ def test_investigate_raises_on_invalid_payload_field_types(tmp_path: Path) -> No
                     {
                         "id": "call_read",
                         "function": {
-                            "name": "read_file",
-                            "arguments": '{"path": "worker.py"}',
+                            "name": "read_files",
+                            "arguments": '{"files": [{"path": "worker.py"}]}',
                         },
                     }
                 ]
@@ -430,8 +432,8 @@ def test_investigate_repairs_fenced_json_output(tmp_path: Path) -> None:
                     {
                         "id": "call_read",
                         "function": {
-                            "name": "read_file",
-                            "arguments": '{"path": "worker.py"}',
+                            "name": "read_files",
+                            "arguments": '{"files": [{"path": "worker.py"}]}',
                         },
                     }
                 ]

@@ -6,6 +6,7 @@ from typing import Any
 
 from repo_agent.cache import ReportStore
 from repo_agent.llm.client import LLMClient
+from repo_agent.llm.debug import RunLLMCallDebugRecorder
 from repo_agent.runtime.events import EventSink, NullEventSink
 from repo_agent.runtime.session import AgentSession
 from repo_agent.toolsets.main_agent_toolset import build_main_agent_tool_registry
@@ -26,6 +27,7 @@ class MainAgent:
         max_investigator_file_reads: int = 15,
         report_store: ReportStore | None = None,
         event_sink: EventSink | None = None,
+        run_recorder: RunLLMCallDebugRecorder | None = None,
     ) -> None:
         self.llm_client = llm_client
         self.session = session
@@ -35,10 +37,33 @@ class MainAgent:
         self.max_investigator_file_reads = max_investigator_file_reads
         self.report_store = report_store
         self.event_sink = event_sink or NullEventSink()
+        self.run_recorder = run_recorder
         prompts_dir = Path(__file__).resolve().parent.parent / "prompts"
         self.prompt_path = prompt_path or prompts_dir / "main_agent.md"
 
     def run(self, user_query: str) -> str:
+        self.session.begin_user_turn(user_query)
+        try:
+            answer = self._run_inner(user_query)
+        except Exception as exc:
+            if self.run_recorder is not None:
+                self.run_recorder.finalize_run(
+                    user_query=user_query,
+                    final_answer=self.session.final_answer,
+                    status="error",
+                    error=str(exc),
+                )
+            raise
+        self.session.record_assistant_answer(answer)
+        if self.run_recorder is not None:
+            self.run_recorder.finalize_run(
+                user_query=user_query,
+                final_answer=answer,
+                status="success",
+            )
+        return answer
+
+    def _run_inner(self, user_query: str) -> str:
         tool_registry = build_main_agent_tool_registry(
             session=self.session,
             investigation_provider=self.investigator,
@@ -119,7 +144,47 @@ class MainAgent:
                 break
 
     def _round_context(self, user_query: str) -> str:
-        return f"用户问题:\n{user_query}\n\n当前调查报告:\n无"
+        return (
+            f"{self._conversation_context()}\n\n"
+            f"当前用户问题:\n{user_query}\n\n"
+            f"{self._reports_context()}"
+        )
+
+    def _conversation_context(self) -> str:
+        previous_messages = self.session.conversation_messages[:-1]
+        if not previous_messages:
+            return "此前对话:\n无"
+
+        lines = ["此前对话:"]
+        for index, message in enumerate(previous_messages[-8:], start=1):
+            role = "用户" if message.role == "user" else "MainAgent"
+            lines.append(f"{index}. {role}: {self._compact_context(message.content, max_chars=900)}")
+        return "\n".join(lines)
+
+    def _reports_context(self) -> str:
+        if not self.session.reports:
+            return "当前调查报告:\n无"
+
+        lines = ["当前调查报告:"]
+        for index, report in enumerate(self.session.reports):
+            lines.append(f"[{index}] {report.id}: {self._compact_context(report.summary, max_chars=700)}")
+            for observation in report.observations[:5]:
+                location = ""
+                if observation.file_path and observation.start_line is not None:
+                    end_line = observation.end_line or observation.start_line
+                    location = f" ({observation.file_path}:L{observation.start_line}-L{end_line})"
+                lines.append(f"  - O{observation.id}{location}: {self._compact_context(observation.summary, max_chars=500)}")
+            if report.remaining_questions:
+                unresolved = "; ".join(report.remaining_questions[:3])
+                lines.append(f"  未解决: {self._compact_context(unresolved, max_chars=500)}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _compact_context(text: str, *, max_chars: int) -> str:
+        compacted = " ".join(text.strip().split())
+        if len(compacted) <= max_chars:
+            return compacted
+        return f"{compacted[: max_chars - 3]}..."
 
     def _emit_tool_event(self, *, name: str, arguments: dict[str, Any]) -> None:
         if name == "request_investigation":

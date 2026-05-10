@@ -4,20 +4,17 @@ from pathlib import Path
 
 from repo_agent.tools.file import (
     FileSummaryProvider,
-    ReadFileTool,
-    SummarizeFileTool,
-    SummarizeFilesTool,
+    ReadFilesTool,
 )
 from repo_agent.tools.registry import ToolRegistry
-from repo_agent.tools.repo import FindTextTool, ReadRepoTreeTool, TraceSymbolTool
+from repo_agent.tools.repo import FindFilesTool, FindTextTool, ListDirTool, TraceSymbolTool
 
 INVESTIGATOR_TOOLS = [
-    "read_repo_tree",
+    "list_dir",
+    "find_files",
     "find_text",
     "trace_symbol",
-    "summarize_files",
-    "read_file",
-    "summarize_file",
+    "read_files",
 ]
 
 
@@ -29,6 +26,8 @@ def build_investigator_tool_registry(
     summary_provider: FileSummaryProvider | None = None,
     ignored_names: set[str] | None = None,
 ) -> ToolRegistry:
+    del require_summary_over_chars
+    del summary_provider
     ignored = ignored_names or {
         ".git",
         "__pycache__",
@@ -39,16 +38,14 @@ def build_investigator_tool_registry(
         ".cache",
     }
     tools = [
-        ReadRepoTreeTool(repo_path, ignored_names=ignored),
+        ListDirTool(repo_path, ignored_names=ignored),
+        FindFilesTool(repo_path, ignored_names=ignored),
         FindTextTool(repo_path, ignored_names=ignored),
         TraceSymbolTool(repo_path, ignored_names=ignored),
-        ReadFileTool(
+        ReadFilesTool(
             repo_path,
             max_chars=max_file_chars,
-            require_summary_over_chars=require_summary_over_chars,
+            require_summary_over_chars=None,
         ),
     ]
-    if summary_provider is not None:
-        tools.append(SummarizeFilesTool(repo_path, summary_provider))
-        tools.append(SummarizeFileTool(repo_path, summary_provider))
     return ToolRegistry(tools)

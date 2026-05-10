@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from repo_agent.agents.file_summary_agent import FileSummaryAgent
 from repo_agent.agents.investigator_agent import InvestigatorAgent
 from repo_agent.agents.main_agent import MainAgent
 from repo_agent.cache import ReportStore
 from repo_agent.llm.client import LLMClient
-from repo_agent.llm.debug import JsonlLLMCallDebugRecorder
+from repo_agent.llm.debug import RunLLMCallDebugRecorder
 from repo_agent.runtime.config import AgentConfig
 from repo_agent.runtime.events import EventSink
 from repo_agent.runtime.session import AgentSession
@@ -26,26 +25,27 @@ def build_agent(
     cfg = config or AgentConfig(repo_path=str(repo))
     session = AgentSession()
     report_store = ReportStore(repo, cache_dir=cfg.cache_dir)
+    run_recorder = RunLLMCallDebugRecorder.at_repo_cache(repo, cache_dir=cfg.cache_dir)
 
     complex_client = llm_client or LLMClient.complex_from_env(
         model=cfg.complex_model,
         api_key_env=cfg.dashscope_api_key_env,
         base_url=cfg.dashscope_base_url,
         enable_thinking=cfg.enable_thinking,
-        debug_recorder=JsonlLLMCallDebugRecorder.at_repo_cache(repo, cache_dir=cfg.cache_dir),
+        debug_recorder=run_recorder,
     )
     simple_client = simple_llm_client or LLMClient.simple_from_env(
         model=cfg.simple_model,
         api_key_env=cfg.dashscope_api_key_env,
         base_url=cfg.dashscope_base_url,
         enable_thinking=cfg.enable_thinking,
-        debug_recorder=JsonlLLMCallDebugRecorder.at_repo_cache(repo, cache_dir=cfg.cache_dir),
+        debug_recorder=run_recorder,
     )
     investigator_registry = build_investigator_tool_registry(
         repo,
         max_file_chars=cfg.max_file_chars,
-        require_summary_over_chars=cfg.max_direct_file_chars,
-        summary_provider=FileSummaryAgent(simple_client),
+        require_summary_over_chars=None,
+        summary_provider=None,
         ignored_names=set(cfg.ignored_dirs),
     )
     investigator = InvestigatorAgent(
@@ -63,6 +63,7 @@ def build_agent(
         max_investigator_file_reads=cfg.max_investigator_file_reads,
         report_store=report_store if cfg.cache_enabled else None,
         event_sink=event_sink,
+        run_recorder=run_recorder,
     )
 
 

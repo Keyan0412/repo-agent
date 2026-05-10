@@ -9,9 +9,9 @@ from repo_agent.tools.base import BaseTool, ToolResult
 
 
 class FindTextArgs(BaseModel):
-    query: str
-    path: str = "."
-    max_results: int = Field(default=20, ge=1)
+    query: str = Field(description="Regex text query. Invalid regex is treated as literal text.")
+    path: str = Field(default=".", description="Repository path to search within.")
+    page: int = Field(default=1, ge=1, description="Result page to read. Each page contains at most 20 matches.")
     case_sensitive: bool = False
 
 
@@ -19,6 +19,7 @@ class FindTextTool(BaseTool):
     name = "find_text"
     description = "Search repository files for matching text."
     args_model = FindTextArgs
+    page_size = 20
 
     def __init__(
         self,
@@ -49,40 +50,83 @@ class FindTextTool(BaseTool):
         except re.error:
             pattern = re.compile(re.escape(args.query), flags)
             used_literal_fallback = True
+        start_index = (args.page - 1) * self.page_size
+        stop_index = start_index + self.page_size
         matches: list[str] = []
+        seen_matches = 0
+        has_next_page = False
 
         for file_path in self._iter_files(target):
             for line_no, line in enumerate(file_path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
                 if pattern.search(line):
+                    if seen_matches < start_index:
+                        seen_matches += 1
+                        continue
+                    if seen_matches >= stop_index:
+                        has_next_page = True
+                        return self._success_result(
+                            matches=matches,
+                            args=args,
+                            literal_fallback=used_literal_fallback,
+                            has_next_page=has_next_page,
+                        )
                     rel_path = file_path.relative_to(self.repo_root).as_posix()
                     matches.append(f"{rel_path}:{line_no}: {line}")
-                    if len(matches) >= args.max_results:
-                        return ToolResult(
-                            success=True,
-                            content="\n".join(matches),
-                            metadata={
-                                "truncated": True,
-                                "match_count": len(matches),
-                                "literal_fallback": used_literal_fallback,
-                            },
-                        )
+                    seen_matches += 1
 
         if not matches:
             return ToolResult(
                 success=True,
-                content="No matches found.",
-                metadata={"match_count": 0, "literal_fallback": used_literal_fallback},
+                content=self._no_matches_content(args.page),
+                metadata={
+                    "page": args.page,
+                    "page_size": self.page_size,
+                    "has_next_page": False,
+                    "truncated": False,
+                    "match_count": 0,
+                    "literal_fallback": used_literal_fallback,
+                },
             )
 
+        return self._success_result(
+            matches=matches,
+            args=args,
+            literal_fallback=used_literal_fallback,
+            has_next_page=False,
+        )
+
+    def _success_result(
+        self,
+        *,
+        matches: list[str],
+        args: FindTextArgs,
+        literal_fallback: bool,
+        has_next_page: bool,
+    ) -> ToolResult:
+        footer = (
+            f"还有更多结果，可以使用 page={args.page + 1} 继续读取。"
+            if has_next_page
+            else "以上为所有结果。"
+        )
         return ToolResult(
             success=True,
-            content="\n".join(matches),
+            content="\n".join([*matches, footer]),
             metadata={
-                "truncated": False,
+                "page": args.page,
+                "page_size": self.page_size,
+                "has_next_page": has_next_page,
+                "next_page": args.page + 1 if has_next_page else None,
+                "truncated": has_next_page,
                 "match_count": len(matches),
-                "literal_fallback": used_literal_fallback,
+                "literal_fallback": literal_fallback,
             },
         )
+
+    @staticmethod
+    def _no_matches_content(page: int) -> str:
+        if page == 1:
+            return "No matches found. 以上为所有结果。"
+        return f"No matches found on page {page}. 以上为所有结果。"
 
     def _iter_files(self, target: Path) -> list[Path]:
         if target.is_file():

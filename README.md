@@ -57,7 +57,8 @@ Notes:
 Run the main agent:
 
 ```bash
-repo-agent --repo-root . "How does this project implement the MainAgent workflow?"
+repo-agent --repo-root .
+repo-agent> How does this project implement the MainAgent workflow?
 ```
 
 Run the investigator demo:

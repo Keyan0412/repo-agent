@@ -6,7 +6,9 @@ import pytest
 from pydantic import BaseModel
 
 from repo_agent.llm.client import DEFAULT_DASHSCOPE_BASE_URL, LLMClient
-from repo_agent.llm.debug import JsonlLLMCallDebugRecorder
+from repo_agent.llm.analyze import format_run_summary, latest_run_summary
+from repo_agent.llm.debug import RunLLMCallDebugRecorder
+from repo_agent.llm.schemas import LLMResponse
 from repo_agent.tools.base import BaseTool, ToolResult
 from repo_agent.tools.registry import ToolRegistry
 
@@ -238,6 +240,36 @@ def test_llm_client_chat_maps_content_and_tool_calls() -> None:
     assert recorder.entries[0]["response"].content == "hello"
 
 
+def test_llm_client_strips_surrogates_before_backend_and_debug_recorder() -> None:
+    backend = _FakeBackend(responses=[{"content": "done", "tool_calls": []}])
+    recorder = _RecordingDebugRecorder()
+    client = LLMClient(
+        model="qwen-plus",
+        api_key="sk-test",
+        backend=backend,
+        debug_recorder=recorder,
+    )
+
+    response = client.chat(
+        messages=[{"role": "user", "content": "分析\udce8schemas"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "bad\udce8description",
+                    "parameters": {},
+                },
+            }
+        ],
+    )
+
+    assert response.content == "done"
+    assert backend.calls[0]["messages"][0]["content"] == "分析schemas"
+    assert backend.calls[0]["tools"][0]["function"]["description"] == "baddescription"
+    assert recorder.entries[0]["payload"]["messages"][0]["content"] == "分析schemas"
+
+
 def test_llm_client_chat_extracts_token_usage() -> None:
     backend = _FakeBackend(
         responses=[
@@ -325,57 +357,110 @@ def test_llm_client_chat_records_errors() -> None:
     assert str(recorder.entries[0]["error"]) == "backend exploded"
 
 
-def test_jsonl_llm_call_debug_recorder_writes_success_and_error_records(tmp_path: Path) -> None:
-    recorder = JsonlLLMCallDebugRecorder.at_repo_cache(tmp_path)
-    client = LLMClient(
+def test_run_llm_call_debug_recorder_writes_run_artifacts(tmp_path: Path) -> None:
+    recorder = RunLLMCallDebugRecorder.at_repo_cache(tmp_path)
+    response = LLMResponse(
+        content="",
+        tool_calls=[
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {
+                    "name": "request_investigation",
+                    "arguments": "{\"task\": \"Inspect tools\"}",
+                },
+            }
+        ],
+        usage={"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+        raw={},
+    )
+    recorder.record_success(
         model="qwen-plus",
-        api_key="sk-test",
-        base_url=DEFAULT_DASHSCOPE_BASE_URL,
-        backend=_FakeBackend(
-            responses=[
+        payload={
+            "messages": [
+                {"role": "system", "content": "你是 MainAgent。你可以请求 InvestigatorAgent。"},
+                {"role": "user", "content": "question"},
+            ]
+        },
+        response=response,
+    )
+    recorder.record_success(
+        model="qwen-plus",
+        payload={
+            "messages": [
+                {"role": "system", "content": "你是 InvestigatorAgent。"},
+                {"role": "user", "content": "inspect"},
+            ]
+        },
+        response=LLMResponse(
+            content="{}",
+            tool_calls=[
                 {
-                    "content": "hello",
-                    "tool_calls": [],
-                    "usage": {
-                        "prompt_tokens": 3,
-                        "completion_tokens": 2,
-                        "total_tokens": 5,
+                    "id": "call_read",
+                    "type": "function",
+                    "function": {
+                        "name": "read_files",
+                        "arguments": "{\"files\": [{\"path\": \"a.py\"}]}",
                     },
                 }
-            ]
+            ],
+            usage={"prompt_tokens": 20, "completion_tokens": 3, "total_tokens": 23},
+            raw={},
         ),
-        debug_recorder=recorder,
     )
 
-    client.chat(messages=[{"role": "user", "content": "ok"}])
+    recorder.finalize_run(
+        user_query="How does it work?",
+        final_answer="done",
+        status="success",
+    )
 
-    error_client = LLMClient(
+    run_dir = tmp_path / ".cache" / "repo-agent" / "runs" / recorder.run_id
+    summary = json.loads((run_dir / "run_summary.json").read_text(encoding="utf-8"))
+
+    assert (run_dir / "raw_llm_calls.jsonl").exists()
+    assert (run_dir / "main_agent.json").exists()
+    assert (run_dir / "investigations" / "T0001.json").exists()
+    assert summary["run_id"] == recorder.run_id
+    assert summary["total_usage"]["total_tokens"] == 35
+    assert summary["agents"]["main"]["total_tokens"] == 12
+    assert summary["investigations"][0]["read_files_paths"] == ["a.py"]
+
+    latest = latest_run_summary(tmp_path)
+    assert latest["run_id"] == recorder.run_id
+    formatted = format_run_summary(latest)
+    assert "How does it work?" in formatted
+    assert "read_files calls: 1" in formatted
+
+
+def test_run_llm_call_debug_recorder_strips_surrogates_from_artifacts(tmp_path: Path) -> None:
+    recorder = RunLLMCallDebugRecorder.at_repo_cache(tmp_path)
+
+    recorder.record_error(
         model="qwen-plus",
-        api_key="sk-test",
-        base_url=DEFAULT_DASHSCOPE_BASE_URL,
-        backend=_ErrorBackend(),
-        debug_recorder=recorder,
+        payload={
+            "messages": [
+                {"role": "system", "content": "你是 MainAgent。"},
+                {"role": "user", "content": "分析\udce8schemas"},
+            ]
+        },
+        error=RuntimeError("backend\udce8exploded"),
     )
-    try:
-        error_client.chat(messages=[{"role": "user", "content": "boom"}])
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError("Expected RuntimeError")
+    recorder.finalize_run(
+        user_query="分析\udce8schemas",
+        final_answer=None,
+        status="error",
+        error="backend\udce8exploded",
+    )
 
-    log_path = tmp_path / ".cache" / "repo-agent" / "llm_calls.jsonl"
-    records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    run_dir = tmp_path / ".cache" / "repo-agent" / "runs" / recorder.run_id
+    raw_text = (run_dir / "raw_llm_calls.jsonl").read_text(encoding="utf-8")
+    summary_text = (run_dir / "run_summary.json").read_text(encoding="utf-8")
 
-    assert [record["status"] for record in records] == ["success", "error"]
-    assert records[0]["request"]["messages"][0]["content"] == "ok"
-    assert records[0]["response"]["content"] == "hello"
-    assert records[0]["response"]["usage"] == {
-        "prompt_tokens": 3,
-        "completion_tokens": 2,
-        "total_tokens": 5,
-    }
-    assert records[1]["request"]["messages"][0]["content"] == "boom"
-    assert records[1]["error"]["message"] == "backend exploded"
+    assert "\udce8" not in raw_text
+    assert "\udce8" not in summary_text
+    assert "分析schemas" in summary_text
+    assert "backendexploded" in raw_text
 
 
 def test_llm_client_extract_json_object_raises_with_original_content() -> None:

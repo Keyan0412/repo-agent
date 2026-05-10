@@ -226,3 +226,111 @@ def test_main_agent_requires_final_answer_tool() -> None:
         assert "max_main_rounds" in str(exc)
     else:
         raise AssertionError("expected MainAgent to require final_answer")
+
+
+def test_main_agent_records_conversation_across_turns() -> None:
+    llm_client = _FakeLLMClient(
+        [
+            LLMResponse(
+                tool_calls=[
+                    _tool_call(
+                        "call_final_1",
+                        "final_answer",
+                        '{"answer":"First answer.","reports_used":[]}',
+                    )
+                ]
+            ),
+            LLMResponse(
+                tool_calls=[
+                    _tool_call(
+                        "call_final_2",
+                        "final_answer",
+                        '{"answer":"Second answer.","reports_used":[]}',
+                    )
+                ]
+            ),
+        ]
+    )
+    session = AgentSession()
+    agent = MainAgent(
+        llm_client=llm_client,  # type: ignore[arg-type]
+        session=session,
+        investigator=_FakeInvestigationProvider(),
+    )
+
+    assert agent.run("First question?") == "First answer."
+    assert agent.run("Follow-up question?") == "Second answer."
+
+    assert [(message.role, message.content) for message in session.conversation_messages] == [
+        ("user", "First question?"),
+        ("assistant", "First answer."),
+        ("user", "Follow-up question?"),
+        ("assistant", "Second answer."),
+    ]
+    second_turn_messages = llm_client.calls[1]["messages"]
+    second_turn_text = "\n".join(str(message.get("content") or "") for message in second_turn_messages)
+    assert "此前对话" in second_turn_text
+    assert "First question?" in second_turn_text
+    assert "First answer." in second_turn_text
+    assert "当前用户问题:\nFollow-up question?" in second_turn_text
+
+
+def test_investigation_task_receives_known_session_information() -> None:
+    llm_client = _FakeLLMClient(
+        [
+            LLMResponse(
+                tool_calls=[
+                    _tool_call(
+                        "call_investigate_1",
+                        "request_investigation",
+                        '{"task":"Find first fact","missing_information":[]}',
+                    )
+                ]
+            ),
+            LLMResponse(
+                tool_calls=[
+                    _tool_call(
+                        "call_final_1",
+                        "final_answer",
+                        '{"answer":"First answer.","reports_used":[0]}',
+                    )
+                ]
+            ),
+            LLMResponse(
+                tool_calls=[
+                    _tool_call(
+                        "call_investigate_2",
+                        "request_investigation",
+                        '{"task":"Find follow-up fact","missing_information":[]}',
+                    )
+                ]
+            ),
+            LLMResponse(
+                tool_calls=[
+                    _tool_call(
+                        "call_final_2",
+                        "final_answer",
+                        '{"answer":"Second answer.","reports_used":[1]}',
+                    )
+                ]
+            ),
+        ]
+    )
+    investigator = _FakeInvestigationProvider()
+    agent = MainAgent(
+        llm_client=llm_client,  # type: ignore[arg-type]
+        session=AgentSession(),
+        investigator=investigator,
+    )
+
+    assert agent.run("Initial question?") == "First answer."
+    assert agent.run("What about the follow-up?") == "Second answer."
+
+    assert len(investigator.tasks) == 2
+    known_information = investigator.tasks[1].known_information
+    assert "对话上下文" in known_information
+    assert "Initial question?" in known_information
+    assert "First answer." in known_information
+    assert "已有调查报告" in known_information
+    assert "[0] R-T0001" in known_information
+    assert "MainAgent is implemented as a tool-driven evidence loop." in known_information

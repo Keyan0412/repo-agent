@@ -45,8 +45,8 @@ class RequestInvestigationTool(BaseTool):
         *,
         user_query: str,
         report_store: ReportStore | None = None,
-        default_max_tool_calls: int = 30,
-        default_max_file_reads: int = 15,
+        default_max_tool_calls: int = 40,
+        default_max_file_reads: int = 30,
     ) -> None:
         self.session = session
         self.investigation_provider = investigation_provider
@@ -77,6 +77,7 @@ class RequestInvestigationTool(BaseTool):
             id=self.session.next_task_id(),
             user_query=self.user_query,
             task=task_text,
+            known_information=self._known_information(),
             max_tool_calls=max_tool_calls,
             max_file_reads=max_file_reads,
         )
@@ -106,6 +107,36 @@ class RequestInvestigationTool(BaseTool):
         max_file_reads["default"] = self.default_max_file_reads
         return schema
 
+    def _known_information(self) -> str:
+        sections: list[str] = []
+
+        conversation = self.session.conversation_messages
+        if conversation:
+            lines = ["对话上下文:"]
+            for message in conversation[-8:]:
+                role = "用户" if message.role == "user" else "MainAgent"
+                lines.append(f"- {role}: {self._compact(message.content, max_chars=700)}")
+            sections.append("\n".join(lines))
+
+        if self.session.reports:
+            lines = ["已有调查报告:"]
+            for index, report in enumerate(self.session.reports):
+                lines.append(f"- [{index}] {report.id}: {self._compact(report.summary, max_chars=700)}")
+                for observation in report.observations[:4]:
+                    location = ""
+                    if observation.file_path and observation.start_line is not None:
+                        end_line = observation.end_line or observation.start_line
+                        location = f" ({observation.file_path}:L{observation.start_line}-L{end_line})"
+                    lines.append(f"  - O{observation.id}{location}: {self._compact(observation.summary, max_chars=400)}")
+                if report.remaining_questions:
+                    unresolved = "; ".join(report.remaining_questions[:3])
+                    lines.append(f"  - 未解决: {self._compact(unresolved, max_chars=400)}")
+            sections.append("\n".join(lines))
+
+        if not sections:
+            return "无"
+        return "\n\n".join(sections)
+
     @staticmethod
     def _format_observations(*, report_index: int, report: InvestigationReport) -> str:
         lines = [
@@ -123,3 +154,10 @@ class RequestInvestigationTool(BaseTool):
         else:
             lines.append("- 无")
         return "\n".join(lines)
+
+    @staticmethod
+    def _compact(text: str, *, max_chars: int) -> str:
+        compacted = " ".join(text.strip().split())
+        if len(compacted) <= max_chars:
+            return compacted
+        return f"{compacted[: max_chars - 3]}..."

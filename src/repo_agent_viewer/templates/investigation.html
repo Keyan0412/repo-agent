@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ investigation.id }}</title>
+    <style>
+      body { margin: 0; font-family: "Segoe UI", sans-serif; background: #f7f7f4; color: #171717; }
+      main { max-width: 1180px; margin: 0 auto; padding: 24px; }
+      a { color: #236b73; }
+      h1 { margin: 0 0 8px; font-size: 22px; }
+      h2 { margin: 22px 0 10px; font-size: 18px; }
+      .muted { color: #666; font-size: 14px; }
+      .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
+      .metric, .card { border: 1px solid #d8d8d0; border-radius: 8px; background: #fff; padding: 12px; }
+      .metric strong { display: block; font-size: 20px; }
+      .call { margin-bottom: 12px; }
+      .message { border-top: 1px solid #ecece6; padding: 8px 0; }
+      .role { font-weight: 700; color: #555; }
+      pre { white-space: pre-wrap; word-break: break-word; background: #f1f1ec; border-radius: 6px; padding: 10px; overflow: auto; }
+      .tool { color: #694c00; }
+      .tool-call { margin-top: 8px; border: 1px solid #e0d8c4; border-radius: 8px; background: #fffaf0; padding: 10px; }
+      .tool-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+      .tool-name { font-weight: 700; color: #694c00; }
+      .tool-param { margin-top: 4px; font-size: 14px; }
+      .tool-param span { color: #666; }
+      .tool-result { margin-top: 8px; }
+      details summary { cursor: pointer; color: #236b73; font-size: 14px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <a href="/runs/{{ run.run_id }}">MainAgent</a>
+      <h1>{{ investigation.id }}</h1>
+      <div class="muted">{{ investigation.task }}</div>
+      <div class="grid">
+        <div class="metric"><span>Total Tokens</span><strong>{{ investigation.usage.total_tokens }}</strong></div>
+        <div class="metric"><span>read_files</span><strong>{{ investigation.read_files_call_count }}</strong></div>
+        <div class="metric"><span>summarize_files</span><strong>{{ investigation.summarize_files_call_count }}</strong></div>
+        <div class="metric"><span>Issues</span><strong>{{ investigation.issues | length }}</strong></div>
+      </div>
+
+      <h2>Tool Counts</h2>
+      <div class="card">
+        {% for name, count in investigation.tool_counts.items() %}
+          <div>{{ name }} x{{ count }}</div>
+        {% endfor %}
+      </div>
+
+      <h2>Read Files</h2>
+      <div class="card">
+        {% for path in investigation.read_files_paths %}
+          <div>{{ path }}</div>
+        {% else %}
+          <div class="muted">No read_files paths.</div>
+        {% endfor %}
+      </div>
+
+      <h2>Investigator Messages</h2>
+      <section class="card call">
+      {% for message in messages %}
+        <div class="message">
+          <div class="role">{{ message.role }}{% if message.name %} · <span class="tool">{{ message.name }}</span>{% endif %}</div>
+          {% if message.content %}<pre>{{ message.content }}</pre>{% endif %}
+          {% for tool_call in message.tool_calls %}
+            <div class="tool-call">
+              <div class="tool-head">
+                <span class="tool-name">{{ tool_call.name }}</span>
+                {% if tool_call.id %}<span class="muted">{{ tool_call.id }}</span>{% endif %}
+              </div>
+              {% for item in tool_call.argument_items %}
+                <div class="tool-param"><span>{{ item.key }}:</span> {{ item.value }}</div>
+              {% else %}
+                <div class="tool-param muted">No parameters</div>
+              {% endfor %}
+              <details class="tool-result">
+                <summary>Tool result{% if not tool_call.has_result %} unavailable{% endif %}</summary>
+                {% if tool_call.has_result %}
+                  <pre>{{ tool_call.result_content }}</pre>
+                {% else %}
+                  <div class="muted">No tool result recorded for this call.</div>
+                {% endif %}
+              </details>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="muted">No Investigator messages.</div>
+      {% endfor %}
+      </section>
+    </main>
+  </body>
+</html>
